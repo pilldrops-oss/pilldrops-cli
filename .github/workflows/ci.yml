@@ -1,0 +1,33 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - run: go vet ./...
+      - run: go vet -tags live ./...
+      - run: go test -race ./...
+      - run: go build ./cmd/pilldrops/
+
+  # Every worked example in the command table, run against a live control
+  # plane. Without the secrets the job fails loudly rather than skipping:
+  # an example nobody runs rots into something that reads well and 404s.
+  catalog-examples:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - env:
+          PILLDROPS_API_URL: ${{ secrets.PILLDROPS_API_URL }}
+          PILLDROPS_API_KEY: ${{ secrets.PILLDROPS_API_KEY }}
+        run: go test -tags live -v -timeout 30m ./internal/cli -run TestCatalogExamplesRun

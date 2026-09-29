@@ -1,0 +1,37 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - run: go test -race ./...
+      - name: Tag must match the version constants
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          grep -q "\"$v\"" internal/cli/version.go && grep -q "\"$v\"" pkg/mcp/mcp.go \
+            || { echo "tag $GITHUB_REF_NAME != Version/ServerVersion"; exit 1; }
+      - name: Build binaries (names match the portal's /dl/ layout)
+        run: |
+          mkdir -p dist
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 \
+              go build -trimpath -ldflags="-s -w" \
+              -o "dist/pilldrops_${target%/*}_${target#*/}" ./cmd/pilldrops/
+          done
+          (cd dist && sha256sum pilldrops_* > SHA256SUMS)
+          ls -lh dist/
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "pilldrops ${GITHUB_REF_NAME}" \
+            --notes "PillDrops CLI ${GITHUB_REF_NAME}. Assets are pilldrops_<os>_<arch>, which @pilldrops/cli and \`pilldrops upgrade\` download from the latest release."

@@ -1,0 +1,37 @@
+{
+  "name": "@pilldrops/cli",
+  "version": "1.0.0",
+  "description": "PillDrops CLI — AI-native sandboxes (secure code execution + app hosting) from your terminal. Installs the `pilldrops` command.",
+  "homepage": "https://github.com/pilldrops-oss/pilldrops-cli#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pilldrops-oss/pilldrops-cli.git",
+    "directory": "npm"
+  },
+  "bin": {
+    "pilldrops": "bin/pilldrops.js"
+  },
+  "files": [
+    "bin/pilldrops.js"
+  ],
+  "scripts": {
+    "postinstall": "PILLDROPS_INSTALL_ONLY=1 node bin/pilldrops.js || true"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "keywords": [
+    "sandbox",
+    "ai",
+    "agent",
+    "code-execution",
+    "cli",
+    "e2b",
+    "pilldrops"
+  ],
+  "license": "MIT"
+}
