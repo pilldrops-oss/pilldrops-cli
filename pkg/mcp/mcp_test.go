@@ -73,7 +73,7 @@ func TestToolsListHasFullCatalog(t *testing.T) {
 		}
 	}
 	for _, must := range []string{"create_sandbox", "run_command", "get_logs", "destroy_sandbox", "write_file", "get_events", "wait_ready",
-		"set_networks", "fork_sandbox", "save_checkpoint", "create_backup", "list_saved_states",
+		"set_networks", "set_egress", "fork_sandbox", "save_checkpoint", "create_backup", "list_saved_states",
 		"restore_sandbox", "delete_saved_state", "set_backup_schedule", "save_snapshot",
 		"list_snapshots", "delete_snapshot", "standby_sandbox", "renew_sandbox", "list_files",
 		"list_secrets", "put_secret", "delete_secret", "forward_port", "list_port_forwards",

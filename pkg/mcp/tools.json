@@ -533,6 +533,30 @@
     ],
     "type": "object"
   },
+  "set_egress": {
+    "properties": {
+      "allow": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "deny": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "sandbox_id": {
+        "description": "sandbox id or slug",
+        "type": "string"
+      }
+    },
+    "required": [
+      "sandbox_id"
+    ],
+    "type": "object"
+  },
   "set_networks": {
     "properties": {
       "networks": {

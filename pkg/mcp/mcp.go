@@ -435,6 +435,32 @@ func toolList() []tool {
 			},
 		},
 		{
+			name: "set_egress",
+			desc: "Replace a running or paused sandbox's outbound network rules. Entries are hostnames " +
+				"(\"*.example.com\" for subdomains), IPv4 addresses or CIDRs; deny [\"0.0.0.0/0\"] blocks " +
+				"everything not allowed. The org's policy is the ceiling: rules can narrow it, never widen it. " +
+				"Takes effect at once and cuts open connections. Omit both lists to return to the default.",
+			schema: obj(map[string]any{
+				"sandbox_id": prop("string", "sandbox id or slug"),
+				"allow":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"deny":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+			}, "sandbox_id"),
+			run: func(a map[string]any, be Backend) map[string]any {
+				var network any
+				allow, hasAllow := a["allow"].([]any)
+				deny, hasDeny := a["deny"].([]any)
+				if hasAllow || hasDeny {
+					network = map[string]any{"allow": nonNil(allow), "deny": nonNil(deny)}
+				}
+				body, _ := json.Marshal(map[string]any{"network": network})
+				resp, errText := apiCall(be, "PATCH", "/v1/sandboxes/"+url.PathEscape(str(a, "sandbox_id")), body, "application/json")
+				if errText != "" {
+					return toolError(errText)
+				}
+				return toolText(resp)
+			},
+		},
+		{
 			name:   "list_sandboxes",
 			desc:   "List active sandboxes: id, template, status.",
 			schema: obj(map[string]any{}),
@@ -695,3 +721,11 @@ func callTool(name string, args map[string]any, be Backend) map[string]any {
 // catalog can state the number instead of carrying a hand-typed one, which is
 // how it came to advertise 18 against 41.
 func ToolCount() int { return len(toolList()) }
+
+// nonNil keeps an absent list from encoding as null, which the API reads as "no rules".
+func nonNil(v []any) []any {
+	if v == nil {
+		return []any{}
+	}
+	return v
+}
