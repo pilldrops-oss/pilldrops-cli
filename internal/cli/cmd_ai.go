@@ -40,7 +40,7 @@ func aiCatalog() string {
 	var b strings.Builder
 	b.WriteString(strings.ReplaceAll(aiHeader, "{{version}}", Version))
 	b.WriteString("\n## Commands\n\n")
-	b.WriteString(commandHelp())
+	b.WriteString(commandHelp(true))
 	b.WriteString(strings.ReplaceAll(aiBody, "{{tools}}", fmt.Sprint(mcp.ToolCount())))
 	return b.String()
 }
@@ -164,6 +164,8 @@ const aiBody = `
 
 ## Notes for agents
 
+- Do not use pilldrops shell, or bare pilldrops on a terminal: that prompt is for
+  people, needs a terminal, and has no JSON contract. Run each command directly.
 - Quote through the shell boundary: pilldrops exec sb_x -- bash -c 'complex | pipeline'.
 - exec runs one command and buffers its output, so nothing that reads a terminal
   works in it: editors, pagers, REPLs, interactive installers. connect (alias ssh)

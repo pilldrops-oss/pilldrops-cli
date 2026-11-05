@@ -47,6 +47,7 @@ func TestPromptChild(t *testing.T) {
 			break
 		}
 	}
+	reexecPrefix = []string{"-test.run=TestPromptChild", "--"}
 	os.Exit(Run(argv, os.Stdout, os.Stderr))
 }
 

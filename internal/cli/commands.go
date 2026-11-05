@@ -30,6 +30,9 @@ type command struct {
 	// with a sandbox created for the run. An example nobody runs rots into
 	// something that reads well and 404s.
 	example string
+
+	// humanOnly keeps a verb in `help` and out of the agent catalog.
+	humanOnly bool
 }
 
 // commandTable is a function, not a var: `ai` is itself a command, so the
@@ -132,7 +135,7 @@ sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
 			example: `pilldrops --json exec $SB -- echo catalog-example`,
 		},
 		{
-			name: "connect", aliases: []string{"ssh", "shell"}, run: cmdConnect,
+			name: "connect", aliases: []string{"ssh"}, run: cmdConnect,
 			help: `connect <id>           interactive shell (a real PTY: editors, pagers, REPLs and
                        installers work, unlike exec which buffers one command).
                        ssh is an alias. --print emits the websocket URL instead`,
@@ -140,6 +143,12 @@ sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
 			// GET the sandbox, find terminal_url, build the websocket URL —
 			// without holding the sweep open.
 			example: `pilldrops --json connect $SB --print`,
+		},
+		{
+			name: "shell", run: cmdShell, humanOnly: true,
+			help: `shell                  a pilldrops> prompt for every command here, for people at a
+                       terminal; bare pilldrops opens it too`,
+			example: `pilldrops --json version`, // a prompt needs a terminal to read from
 		},
 		{
 			name: "test", run: cmdTest,
@@ -354,6 +363,9 @@ func lookup(name string) (command, bool) {
 func commandPaths() []string {
 	var out []string
 	for _, c := range commandTable() {
+		if c.humanOnly {
+			continue
+		}
 		if len(c.subs) == 0 {
 			out = append(out, c.name)
 			continue
@@ -366,9 +378,12 @@ func commandPaths() []string {
 }
 
 // commandHelp renders the table's help blocks, two spaces in.
-func commandHelp() string {
+func commandHelp(forAgents bool) string {
 	var b strings.Builder
 	for _, c := range commandTable() {
+		if forAgents && c.humanOnly {
+			continue
+		}
 		for _, line := range strings.Split(c.help, "\n") {
 			fmt.Fprintf(&b, "  %s\n", line)
 		}
@@ -379,5 +394,5 @@ func commandHelp() string {
 // usage prints the top-level help.
 func usage(w io.Writer) {
 	fmt.Fprint(w, "usage: pilldrops [--json] [--quiet] [--api-url URL] <command> [args]\n\ncommands:\n")
-	fmt.Fprint(w, commandHelp())
+	fmt.Fprint(w, commandHelp(false))
 }
