@@ -20,6 +20,9 @@ type APIError struct {
 	// transport failure is not an APIError at all, so a caller that cannot see
 	// a terminal can still tell the two apart.
 	Code string
+	// Body is the response as sent, for the routes whose refusal says more than
+	// {error, code}.
+	Body []byte
 }
 
 func (e *APIError) Error() string { return fmt.Sprintf("%s (HTTP %d)", e.Msg, e.Status) }
@@ -82,7 +85,7 @@ func (c *Client) Raw(method, path string, body []byte, contentType string) ([]by
 		if e.Error == "" {
 			e.Error = http.StatusText(status)
 		}
-		return nil, &APIError{Status: status, Msg: e.Error, Code: e.Code}
+		return nil, &APIError{Status: status, Msg: e.Error, Code: e.Code, Body: b}
 	}
 	return b, nil
 }

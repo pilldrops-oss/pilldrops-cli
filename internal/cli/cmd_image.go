@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -40,29 +41,35 @@ func cmdImage(c *cmdCtx, args []string) int {
 		return ExitUsage
 	}
 
-	data, err := tarDir(dir) // Dockerfile must be at the context root
+	data, err := tarContext(dir)
 	if err != nil {
 		return c.fail(err)
 	}
-	base, key := resolveCreds(c.apiURL)
-	if key == "" {
-		return c.fail(errNotLoggedIn)
+	cl, err := c.client()
+	if err != nil {
+		return c.fail(err)
 	}
 	// A Docker build takes minutes and fans out to every node — long timeout.
-	cl := &Client{Base: base, Key: key, HTTP: &http.Client{Timeout: 25 * time.Minute}}
+	cl.HTTP = &http.Client{Timeout: 25 * time.Minute}
 	if !c.quiet {
 		fmt.Fprintf(c.stderr, "building %q from %s/ on the fleet (this can take a few minutes)…\n", name, dir)
 	}
 	body, err := cl.Raw("POST", "/v1/images/build?name="+url.QueryEscape(name), data, "application/octet-stream")
+	// A failed build answers non-2xx with the build's own report; any other
+	// refusal (bad key, oversize context) has no "ok" and is an ordinary error.
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		var report struct {
+			OK *bool `json:"ok"`
+		}
+		if json.Unmarshal(apiErr.Body, &report) == nil && report.OK != nil {
+			body, err = apiErr.Body, nil
+		}
+	}
 	if err != nil {
 		return c.fail(err)
 	}
-	var res struct {
-		OK    bool             `json:"ok"`
-		Tag   string           `json:"tag"`
-		Log   string           `json:"log"`
-		Nodes []map[string]any `json:"nodes"`
-	}
+	var res imageBuildResult
 	_ = json.Unmarshal(body, &res)
 	if c.jsonOut {
 		printJSON(c.stdout, json.RawMessage(body))
@@ -72,13 +79,51 @@ func cmdImage(c *cmdCtx, args []string) int {
 		return ExitAPI
 	}
 	if !res.OK {
-		if res.Log != "" {
-			fmt.Fprintln(c.stderr, res.Log)
+		if tail := logTail(res.Log, 40); tail != "" {
+			fmt.Fprintln(c.stderr, tail)
 		}
-		fmt.Fprintln(c.stderr, "pilldrops: image build failed")
+		fmt.Fprintln(c.stderr, "pilldrops: image build failed: "+res.reason())
 		return ExitAPI
 	}
 	fmt.Fprintf(c.stdout, "built %s (on %d node(s))\n", res.Tag, len(res.Nodes))
 	fmt.Fprintf(c.stdout, "launch it:  pilldrops sandbox create --image %s\n", res.Tag)
 	return ExitOK
+}
+
+type buildStep struct {
+	Error string `json:"error"`
+}
+
+// imageBuildResult is POST /v1/images/build's report. A node answering directly
+// says why in error, a control plane in build and publish, an older one in nodes.
+type imageBuildResult struct {
+	OK      bool        `json:"ok"`
+	Tag     string      `json:"tag"`
+	Log     string      `json:"log"`
+	Error   string      `json:"error"`
+	Build   buildStep   `json:"build"`
+	Publish buildStep   `json:"publish"`
+	Nodes   []buildStep `json:"nodes"`
+}
+
+func (r imageBuildResult) reason() string {
+	reasons := []string{r.Error, r.Build.Error, r.Publish.Error}
+	for _, n := range r.Nodes {
+		reasons = append(reasons, n.Error)
+	}
+	for _, why := range reasons {
+		if why != "" {
+			return why
+		}
+	}
+	return "the server gave no reason"
+}
+
+// logTail is the last n lines of a build log, which is where docker says what broke.
+func logTail(log string, n int) string {
+	lines := strings.Split(strings.TrimRight(log, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }

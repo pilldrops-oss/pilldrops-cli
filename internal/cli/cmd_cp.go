@@ -22,7 +22,18 @@ var stdin io.Reader = os.Stdin
 // tarDir builds a gzipped tar of dir with the directory itself as the
 // top-level entry (scp semantics: `cp -r proj id:.` lands at ~/proj).
 func tarDir(dir string) ([]byte, error) {
-	base := filepath.Base(filepath.Clean(dir))
+	return tarTree(dir, filepath.Base(filepath.Clean(dir)))
+}
+
+// tarContext builds a docker build context: dir's own contents at the root, so
+// its Dockerfile is at "Dockerfile". Unlike cp's tar it keeps symlink targets,
+// because docker refuses to unpack a link that has none.
+func tarContext(dir string) ([]byte, error) {
+	return tarTree(dir, "")
+}
+
+// tarTree tars dir with every entry under prefix.
+func tarTree(dir, prefix string) ([]byte, error) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
@@ -38,9 +49,14 @@ func tarDir(dir string) ([]byte, error) {
 		if err != nil {
 			return err
 		}
-		hdr.Name = base
-		if rel != "." {
-			hdr.Name = base + "/" + filepath.ToSlash(rel)
+		hdr.Name = path.Join(prefix, filepath.ToSlash(rel))
+		if hdr.Name == "." {
+			return nil
+		}
+		if prefix == "" && fi.Mode()&os.ModeSymlink != 0 {
+			if hdr.Linkname, err = os.Readlink(p); err != nil {
+				return err
+			}
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
 			return err
