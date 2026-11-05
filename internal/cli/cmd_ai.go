@@ -151,7 +151,7 @@ const aiBody = `
 
 ## MCP (use sandboxes as native agent tools)
 
-    # stdio, using the stored login (auto-opens browser sign-in when logged out):
+    # stdio, using the stored login (run pilldrops login first; logged out, tools fail):
     claude mcp add pilldrops -- pilldrops mcp
     # remote, served by the control plane at /mcp, with an API key:
     claude mcp add --transport http pilldrops <server>/mcp --header "Authorization: Bearer <api-key>"

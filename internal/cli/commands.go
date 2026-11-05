@@ -39,7 +39,9 @@ func commandTable() []command {
 	return []command{
 		{
 			name: "login", run: cmdLogin,
-			help:    `login [--key K] [--api-url URL]   store a credential (--key is the scripted path)`,
+			help: `login [--key K] [--api-url URL]   verify and store a credential. On a terminal, with
+                       no --key, it asks for the server and the key (echo off);
+                       anywhere else --key is required, or it exits 2`,
 			example: `pilldrops --json login --key $PILLDROPS_API_KEY`,
 		},
 		{
