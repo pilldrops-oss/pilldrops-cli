@@ -169,49 +169,7 @@ func threadVerbs() []apiVerb {
 		}},
 		{sub: "get", args: "<id>", method: "GET", path: "/v1/threads/%s"},
 		{sub: "rm", args: "<id> --confirm", method: "DELETE", path: "/v1/threads/%s", confirm: true},
-		{sub: "send", args: "<id> <message>", method: "PATCH", path: "/v1/threads/%s", run: threadSend},
 	}
-}
-
-// threadSend appends to a stored transcript, which is all /v1/threads is: the
-// server has no send route and runs nothing. Turn shape is the dashboard's, the
-// one writer of these until now. Read then write, so the last writer wins.
-func threadSend(v *verbCall) int {
-	path := v.url()
-	raw, err := v.send("GET", path, nil)
-	if err != nil {
-		return v.c.fail(err)
-	}
-	var thread struct {
-		Turns string `json:"turns"`
-	}
-	if err := json.Unmarshal(raw, &thread); err != nil {
-		return v.c.fail(fmt.Errorf("unreadable thread: %w", err))
-	}
-	turns := []json.RawMessage{}
-	if thread.Turns != "" {
-		if err := json.Unmarshal([]byte(thread.Turns), &turns); err != nil {
-			return v.c.fail(fmt.Errorf("this thread's transcript is not a list, so it was left alone: %w", err))
-		}
-	}
-	turn, err := json.Marshal(map[string]string{"kind": "you", "text": v.pos[1]})
-	if err != nil {
-		return v.c.fail(err)
-	}
-	updated, err := json.Marshal(append(turns, turn))
-	if err != nil {
-		return v.c.fail(err)
-	}
-	raw, err = v.send(v.method, path, map[string]string{"turns": string(updated)})
-	if err != nil {
-		return v.c.fail(err)
-	}
-	v.text = func(v *verbCall, _ map[string]any) {
-		if !v.c.quiet {
-			fmt.Fprintln(v.c.stdout, "saved")
-		}
-	}
-	return v.respond(raw)
 }
 
 func integrationVerbs() []apiVerb {

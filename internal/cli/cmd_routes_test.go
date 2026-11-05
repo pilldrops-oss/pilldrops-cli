@@ -117,7 +117,7 @@ var skippedRoutes = map[string]string{
 	"PUT /v1/functions/{name}":                                  "reachable through api",
 	"PATCH /v1/projects/{id}":                                   "reachable through api",
 	"PATCH /v1/projects/{id}/runs/{runID}":                      "reachable through api",
-	"PATCH /v1/threads/{id}":                                    "thread send uses it, on a read-modify-write",
+	"PATCH /v1/threads/{id}":                                    "reachable through api: an opaque transcript store",
 	"POST /v1/sandboxes/{id}/integrations":                      "sandbox integrations add|rm use it, after a read",
 	"/v1/members":                                               "refuses API keys: needs a dashboard sign-in",
 	"/v1/orgs":                                                  "refuses API keys: needs a dashboard sign-in",

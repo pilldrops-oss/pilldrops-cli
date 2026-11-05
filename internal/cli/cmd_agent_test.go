@@ -274,35 +274,6 @@ func TestSandboxIntegrationsEditsTheWholeSet(t *testing.T) {
 	}
 }
 
-func TestThreadSendAppendsToTheTranscript(t *testing.T) {
-	stored := `[{"kind":"agent","text":"hi","extra":1}]`
-	var patched struct {
-		Turns string `json:"turns"`
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/threads/th1", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"id": "th1", "turns": stored})
-	})
-	mux.HandleFunc("PATCH /v1/threads/th1", func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&patched)
-		_, _ = w.Write([]byte(`{"id":"th1"}`))
-	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-	if code, _, errS := authedCLI(t, srv, "thread", "send", "th1", "next"); code != ExitOK {
-		t.Fatalf("exit %d stderr %s", code, errS)
-	}
-	want := `[{"kind":"agent","text":"hi","extra":1},{"kind":"you","text":"next"}]`
-	if patched.Turns != want {
-		t.Fatalf("turns = %s, want %s", patched.Turns, want)
-	}
-
-	stored, patched.Turns = `not a list`, ""
-	if code, _, _ := authedCLI(t, srv, "thread", "send", "th1", "next"); code != ExitAPI || patched.Turns != "" {
-		t.Fatalf("a transcript it cannot read must be left alone: exit %d, patched %q", code, patched.Turns)
-	}
-}
-
 func TestChatSendsOrReads(t *testing.T) {
 	var body map[string]any
 	mux := http.NewServeMux()

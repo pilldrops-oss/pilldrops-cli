@@ -174,7 +174,7 @@ sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
 			help: `cp [-r] <src> <dst>    copy files; sandbox side is <id>:<path>, "-" is stdin/stdout,
                        relative and ~/ paths are the sandbox home; -r copies a
                        directory under the destination (like scp)`,
-			example: `pilldrops cp $SB:/etc/hostname -`,
+			example: `pilldrops cp $SB:.bashrc -`,
 		},
 		{
 			name: "env", run: cmdEnv, subs: []string{"set", "list", "scope", "rm"},
@@ -217,7 +217,7 @@ sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
 			name: "fs", run: cmdFS, subs: []string{"ls", "stat", "mkdir", "mv", "rm"},
 			help: `fs ls|stat|mkdir|rm <id> <path>         browse and edit the sandbox filesystem
                        (fs mv <id> <src> <dst>); cp moves the bytes`,
-			example: `pilldrops --json fs ls $SB /`,
+			example: `pilldrops --json fs ls $SB .`,
 		},
 		{
 			name: "ps", run: cmdPs,
@@ -271,7 +271,8 @@ agent token rm <id> <tokenID> --confirm; agent token rotate <id> <tokenID>
 agent share <id> [--scope ...]   a one-time link (never the token itself)
 agent approve <id> <approvalID> --allow|--deny
 agent webhook add <id> <url> --event E ...; agent webhook rm <id> <hookID> --confirm;
-                       agent webhook test <id> <hookID>`,
+                       agent webhook test <id> <hookID>. agent webhooks <id> lists
+                       the events that can be delivered (turn.completed, turn.failed, …)`,
 			`pilldrops --json templates`),
 		group("cron", cronVerbs(), `cron list | create <sandbox> <schedule> <command> [--name N] [--timezone Z]
                        [--agent-mode guided|autonomous] | rm <id> --confirm |
@@ -285,9 +286,9 @@ agent webhook add <id> <url> --event E ...; agent webhook rm <id> <hookID> --con
                        | runs <id> | run <id> [--service service:sandbox ...]
                        (run records a run against the plan; it starts nothing)`,
 			`pilldrops --json project list`),
-		group("thread", threadVerbs(), `thread list | create [--title T] | get <id> | rm <id> --confirm | send <id> <message>
-                       stored transcripts, as the dashboard keeps them. send
-                       appends to one and runs nothing; agent ask gives work to an agent`,
+		group("thread", threadVerbs(), `thread list | create [--title T] | get <id> | rm <id> --confirm
+                       stored transcripts, as the dashboard keeps them; a thread
+                       runs nothing. agent ask gives work to an agent`,
 			`pilldrops --json thread list`),
 		group("integrations", integrationVerbs(), `integrations           the MCP servers that can be switched on
                        (sandbox integrations <id> switches them)`,
