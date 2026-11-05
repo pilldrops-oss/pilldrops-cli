@@ -66,13 +66,15 @@ const aiHeader = `# pilldrops — AI agent catalog (v{{version}})
 - Credentials resolve in order: ` + "`--api-url`" + ` flag >
   PILLDROPS_API_KEY/PILLDROPS_API_URL env > the SANDFORGE_ equivalents >
   /run/pilldrops/{token,env} (present only inside a sandbox, which is then its
-  own principal) > ~/.sandforge/config.json (written by login).
+  own principal) > ~/.sandforge/config.json (written by login; SANDFORGE_CONFIG
+  moves it).
   API URL defaults to http://localhost:8080 when unset.
 - A missing required argument is always exit 2 with a usage line, never a
   question: the CLI asks for one only when stdin is a terminal AND ` + "`--json`" + `
   was not given, so nothing you run can block waiting for an answer.
 - Non-interactive auth: ` + "`pilldrops login --key <key>`" + `, or set
-  PILLDROPS_API_KEY. Mint a key with ` + "`pilldrops keys create <name>`" + ` —
+  PILLDROPS_API_KEY; without either, ` + "`pilldrops login`" + ` exits 2 (it asks only
+  on a terminal). Mint a key with ` + "`pilldrops keys create <name>`" + ` —
   the secret is printed once and never again.
 - Ask before you assume: ` + "`pilldrops capabilities`" + ` says what this
   deployment supports and ` + "`pilldrops limits`" + ` what this plan allows, so a
