@@ -77,6 +77,9 @@ const aiHeader = `# pilldrops — AI agent catalog (v{{version}})
 - Ask before you assume: ` + "`pilldrops capabilities`" + ` says what this
   deployment supports and ` + "`pilldrops limits`" + ` what this plan allows, so a
   501 or a 402 can be predicted rather than discovered.
+- ` + "`pilldrops api <METHOD> /v1/...`" + ` reaches any route without a typed verb.
+  /v1/members and /v1/orgs refuse API keys on purpose: they need a dashboard
+  sign-in, so nothing here can reach them.
 - Self-checks: ` + "`pilldrops doctor --json`" + ` diagnoses auth/connectivity;
   ` + "`pilldrops upgrade`" + ` replaces this binary with the latest release.
 `

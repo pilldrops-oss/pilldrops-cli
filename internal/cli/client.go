@@ -77,17 +77,42 @@ func (c *Client) Raw(method, path string, body []byte, contentType string) ([]by
 		return nil, err
 	}
 	if status < 200 || status > 299 {
-		var e struct {
-			Error string `json:"error"`
-			Code  string `json:"code"`
-		}
-		_ = json.Unmarshal(b, &e)
-		if e.Error == "" {
-			e.Error = http.StatusText(status)
-		}
-		return nil, &APIError{Status: status, Msg: e.Error, Code: e.Code, Body: b}
+		return nil, apiError(status, b)
 	}
 	return b, nil
+}
+
+func apiError(status int, body []byte) *APIError {
+	var e struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	_ = json.Unmarshal(body, &e)
+	if e.Error == "" {
+		e.Error = http.StatusText(status)
+	}
+	return &APIError{Status: status, Msg: e.Error, Code: e.Code, Body: body}
+}
+
+// Stream opens a server-sent event stream. It has no timeout, unlike Raw: a
+// healthy stream never ends. The caller closes the body.
+func (c *Client) Stream(path string) (io.ReadCloser, error) {
+	req, err := http.NewRequest("GET", c.Base+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Key)
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return nil, apiError(resp.StatusCode, b)
+	}
+	return resp.Body, nil
 }
 
 // JSON performs a request with a JSON body (in may be nil) and decodes the
