@@ -119,8 +119,8 @@ var skippedRoutes = map[string]string{
 	"PATCH /v1/projects/{id}/runs/{runID}":                      "reachable through api",
 	"PATCH /v1/threads/{id}":                                    "reachable through api: an opaque transcript store",
 	"POST /v1/sandboxes/{id}/integrations":                      "sandbox integrations add|rm use it, after a read",
-	"/v1/members":                                               "refuses API keys: needs a dashboard sign-in",
-	"/v1/orgs":                                                  "refuses API keys: needs a dashboard sign-in",
+	"/v1/members":                                               "team verbs, on a session: TestTeamLoginStoresASessionAndUsesIt",
+	"/v1/orgs":                                                  "team verbs, on a session: TestTeamLoginStoresASessionAndUsesIt",
 }
 
 func TestEveryCustomerRouteHasAVerbOrAReason(t *testing.T) {

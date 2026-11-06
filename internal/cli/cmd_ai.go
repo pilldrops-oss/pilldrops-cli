@@ -154,6 +154,17 @@ const aiBody = `
                                     consumption against the ceilings
     network/5xx errors              pilldrops doctor --json diagnoses; GETs retry once automatically
 
+## Teams
+
+Members and orgs need a person, so an API key cannot manage them. As an agent:
+
+    pilldrops --json team login --portal $URL --no-wait     # gives verification_uri and device_code
+    # ask a person to open verification_uri and approve the code, then:
+    pilldrops --json team login --portal $URL --device-code $CODE
+    pilldrops --json team members --org o:ID
+
+The session lasts 8 hours and reaches only the team commands.
+
 ## MCP (use sandboxes as native agent tools)
 
     # stdio, using the stored login (run pilldrops login first; logged out, tools fail):

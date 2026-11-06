@@ -250,6 +250,12 @@ history <id>           one past sandbox: charge, runtime, logs`,
 			help:    `image build <dir> -t N build a custom image (Dockerfile at <dir> root) → --image N`,
 			example: `pilldrops --json image build $DOCKERDIR -t catalog-example`,
 		},
+		group("team", teamVerbs(), `team login [--portal URL] [--no-wait] [--device-code C] | logout
+                       team orgs | org create <name> | members [--org o:ID]
+                       team invite <email> [--role R] | uninvite <email> --confirm
+                       team role <user_id> <role> | remove <user_id> --confirm
+                       manage people; a person approves the login in a browser`,
+			`pilldrops --json team orgs`),
 		group("volume", volumeVerbs(), `volume create [name] --size-mb N | list | get <id> | rm <id> --confirm
                        a disk that outlives its sandbox; attach it with
                        sandbox create --volume <id>:<path>`,
