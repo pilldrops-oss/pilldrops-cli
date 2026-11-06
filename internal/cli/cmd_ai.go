@@ -18,11 +18,12 @@ import (
 func cmdAI(c *cmdCtx, _ []string) int {
 	if c.jsonOut {
 		printJSON(c.stdout, map[string]any{
-			"version":  Version,
-			"catalog":  aiCatalog(),
-			"commands": commandPaths(),
+			"version":              Version,
+			"catalog":              aiCatalog(c.supports),
+			"commands":             commandPaths(c.supports),
+			"unsupported_features": c.unsupportedFeatures(),
 			"mcp_tools": map[string]any{
-				"count":  mcp.ToolCount(),
+				"count":  mcp.ToolCountFor(c.supports),
 				"stdio":  "pilldrops mcp",
 				"remote": "<api-url>/mcp",
 			},
@@ -32,16 +33,20 @@ func cmdAI(c *cmdCtx, _ []string) int {
 		})
 		return ExitOK
 	}
-	_, _ = io.WriteString(c.stdout, aiCatalog())
+	_, _ = io.WriteString(c.stdout, aiCatalog(c.supports))
 	return ExitOK
 }
 
-func aiCatalog() string {
+func aiCatalog(supports func(string) bool) string {
 	var b strings.Builder
 	b.WriteString(strings.ReplaceAll(aiHeader, "{{version}}", Version))
 	b.WriteString("\n## Commands\n\n")
-	b.WriteString(commandHelp(true))
-	b.WriteString(strings.ReplaceAll(aiBody, "{{tools}}", fmt.Sprint(mcp.ToolCount())))
+	b.WriteString(commandHelp(true, supports))
+	b.WriteString(aiBody)
+	if supports("team") {
+		b.WriteString(aiTeams)
+	}
+	b.WriteString(strings.ReplaceAll(aiTail, "{{tools}}", fmt.Sprint(mcp.ToolCountFor(supports))))
 	return b.String()
 }
 
@@ -76,6 +81,9 @@ const aiHeader = `# pilldrops — AI agent catalog (v{{version}})
   PILLDROPS_API_KEY; without either, ` + "`pilldrops login`" + ` exits 2 (it asks only
   on a terminal). Mint a key with ` + "`pilldrops keys create <name>`" + ` —
   the secret is printed once and never again.
+- This catalog lists what the logged-in server serves, read from
+  GET /v1/capabilities; a self-hosted server has fewer groups than PillDrops Cloud.
+  Logged out, it lists everything.
 - Ask before you assume: ` + "`pilldrops capabilities`" + ` says what this
   deployment supports and ` + "`pilldrops limits`" + ` what this plan allows, so a
   501 or a 402 can be predicted rather than discovered.
@@ -152,8 +160,12 @@ const aiBody = `
                                     then use start (not exec) for servers, or create with --idle -1
     "limit/quota" errors            plan caps hit — pilldrops usage and pilldrops limits show
                                     consumption against the ceilings
+    code feature_unavailable        this server does not have that group; pilldrops capabilities
+                                    lists what it has (features). Do not retry
     network/5xx errors              pilldrops doctor --json diagnoses; GETs retry once automatically
+`
 
+const aiTeams = `
 ## Teams
 
 Members and orgs need a person, so an API key cannot manage them. As an agent:
@@ -164,7 +176,9 @@ Members and orgs need a person, so an API key cannot manage them. As an agent:
     pilldrops --json team members --org o:ID
 
 The session lasts 8 hours and reaches only the team commands.
+`
 
+const aiTail = `
 ## MCP (use sandboxes as native agent tools)
 
     # stdio, using the stored login (run pilldrops login first; logged out, tools fail):

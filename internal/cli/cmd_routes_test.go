@@ -180,7 +180,7 @@ func TestEveryNewGroupIsInTheRouteList(t *testing.T) {
 	}
 }
 
-// Without the flag nothing is sent, on every destructive verb declared here.
+// Without the flag nothing but the capabilities read is sent, on every destructive verb declared here.
 func TestNewDestructiveVerbsRequireConfirm(t *testing.T) {
 	for _, tc := range customerRoutes {
 		if tc.args == nil || tc.args[len(tc.args)-1] != "--confirm" {
@@ -189,7 +189,11 @@ func TestNewDestructiveVerbsRequireConfirm(t *testing.T) {
 		args := tc.args[:len(tc.args)-1]
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			calls := 0
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { calls++ }))
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/capabilities" {
+					calls++
+				}
+			}))
 			defer srv.Close()
 			code, _, errS := authedCLI(t, srv, args...)
 			if code != ExitUsage || calls != 0 || !strings.Contains(errS, "--confirm") {

@@ -137,6 +137,9 @@ func cmdSandbox(c *cmdCtx, args []string) int {
 	case "unexpose":
 		return sandboxUnexpose(c, cl, subArgs)
 	case "integrations":
+		if err := c.requireFeature("integrations"); err != nil {
+			return c.fail(err)
+		}
 		return sandboxIntegrations(c, cl, subArgs)
 	case "create":
 		fs := flag.NewFlagSet("create", flag.ContinueOnError)
@@ -163,6 +166,12 @@ func cmdSandbox(c *cmdCtx, args []string) int {
 		fs.Var(&volumes, "volume", "attach a volume as <id>:<path>, repeatable (`pilldrops volume create`)")
 		if err := fs.Parse(subArgs); err != nil {
 			return ExitUsage
+		}
+		// A server without volumes ignores the field, and the sandbox would boot without its disk.
+		if len(volumes) > 0 {
+			if err := c.requireFeature("volume"); err != nil {
+				return c.fail(err)
+			}
 		}
 		mounts := make([]map[string]string, 0, len(volumes))
 		for _, v := range volumes {

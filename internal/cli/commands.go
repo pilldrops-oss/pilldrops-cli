@@ -33,6 +33,24 @@ type command struct {
 
 	// humanOnly keeps a verb in `help` and out of the agent catalog.
 	humanOnly bool
+
+	// feature is the optional group GET /v1/capabilities must list for this verb
+	// to appear and run. Empty means every server has it.
+	feature string
+
+	// optional are the parts of a core verb that need a group of their own.
+	optional []optionalPart
+}
+
+// optionalPart adds to a core verb's sub-verbs and help when its feature exists.
+type optionalPart struct {
+	feature, sub, help string
+}
+
+// needs marks a table entry as belonging to an optional group.
+func (c command) needs(feature string) command {
+	c.feature = feature
+	return c
 }
 
 // commandTable is a function, not a var: `ai` is itself a command, so the
@@ -85,11 +103,16 @@ func commandTable() []command {
 			name: "sandbox", run: cmdSandbox,
 			subs: []string{"create", "ls", "get", "rm", "pause", "resume", "fork", "open", "ports",
 				"set-port", "rename", "expose", "forwards", "unexpose", "networks", "standby",
-				"refresh", "set-timeout", "set-idle", "set-hibernate", "share", "unshare", "integrations"},
+				"refresh", "set-timeout", "set-idle", "set-hibernate", "share", "unshare"},
+			optional: []optionalPart{
+				{feature: "volume", help: `sandbox create --volume <id>:<path> (xN)   attach a volume`},
+				{feature: "integrations", sub: "integrations", help: `sandbox integrations <id> [add|rm <server>... [--env K=V ...]]   its MCP servers. The
+                       API replaces the whole set and keeps no credentials, so
+                       pass --env again for every server that still needs one`},
+			},
 			help: `sandbox create|ls|get|rm|pause|resume|fork
     create flags: --template --from-snapshot --image --start --port (xN) --env (xN)
                   --vcpu --mem --storage --timeout --idle --slug --networks
-                  --volume <id>:<path> (xN)
 sandbox open <id> [--print] [--port <n>]   open the sandbox's app in a browser; --port opens any port you started a server on (flags in either order)
 sandbox ports <id>     every port the platform probes, which are listening, and an HTTPS link for each
                        (https://<port>-<id>.<domain>/); set-port <id> <port>
@@ -116,9 +139,6 @@ sandbox set-timeout <id> <secs>   hard lifetime from now (-1 = persistent, plan
                        (-1 = never, 0 = platform default)
 sandbox share|unshare <id>    org-visible or private; share wipes the agent
                        logins inside first, and unshare does not restore them
-sandbox integrations <id> [add|rm <server>... [--env K=V ...]]   its MCP servers. The
-                       API replaces the whole set and keeps no credentials, so
-                       pass --env again for every server that still needs one
 sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
                        and is never prompted for, as on every destructive verb.
                        A missing <id> IS asked for, on a terminal only`,
@@ -255,11 +275,11 @@ history <id>           one past sandbox: charge, runtime, logs`,
                        team invite <email> [--role R] | uninvite <email> --confirm
                        team role <user_id> <role> | remove <user_id> --confirm
                        manage people; a person approves the login in a browser`,
-			`pilldrops --json team orgs`),
+			`pilldrops --json team orgs`).needs("team"),
 		group("volume", volumeVerbs(), `volume create [name] --size-mb N | list | get <id> | rm <id> --confirm
                        a disk that outlives its sandbox; attach it with
                        sandbox create --volume <id>:<path>`,
-			`pilldrops --json volume list`),
+			`pilldrops --json volume list`).needs("volume"),
 		// Every agent route 404s for a template that is not kind=agent, and the
 		// sweep's sandbox is a plain one, so it checks the catalog those come from.
 		group("agent", agentVerbs(), `agent status|models|turns|threads|tokens|approvals|policy|webhooks|isolation|connect <id>
@@ -279,15 +299,15 @@ agent approve <id> <approvalID> --allow|--deny
 agent webhook add <id> <url> --event E ...; agent webhook rm <id> <hookID> --confirm;
                        agent webhook test <id> <hookID>. agent webhooks <id> lists
                        the events that can be delivered (turn.completed, turn.failed, …)`,
-			`pilldrops --json templates`),
+			`pilldrops --json templates`).needs("agent"),
 		group("cron", cronVerbs(), `cron list | create <sandbox> <schedule> <command> [--name N] [--timezone Z]
                        [--agent-mode guided|autonomous] | rm <id> --confirm |
                        run <id> (exit 1 if the job failed) | toggle <id> --on|--off`,
-			`pilldrops --json cron list`),
+			`pilldrops --json cron list`).needs("cron"),
 		group("function", functionVerbs(), `function list | create <name> --start CMD [--template T] [--port N] [--vcpu N]
                        [--mem MB] [--max-replicas N] [--env K=V ...] [--file local[:remote] ...]
                        | get|code|logs|metrics <name> | rm <name> --confirm`,
-			`pilldrops --json function list`),
+			`pilldrops --json function list`).needs("function"),
 		group("project", projectVerbs(), `project list | create <name> [--plan TEXT] | get <id> | rm <id> --confirm (archives)
                        | runs <id> | run <id> [--service service:sandbox ...]
                        (run records a run against the plan; it starts nothing)`,
@@ -295,18 +315,18 @@ agent webhook add <id> <url> --event E ...; agent webhook rm <id> <hookID> --con
 		group("thread", threadVerbs(), `thread list | create [--title T] | get <id> | rm <id> --confirm
                        stored transcripts, as the dashboard keeps them; a thread
                        runs nothing. agent ask gives work to an agent`,
-			`pilldrops --json thread list`),
+			`pilldrops --json thread list`).needs("thread"),
 		group("integrations", integrationVerbs(), `integrations           the MCP servers that can be switched on
                        (sandbox integrations <id> switches them)`,
-			`pilldrops --json integrations`),
+			`pilldrops --json integrations`).needs("integrations"),
 		group("chat", chatVerbs(), `chat <id> [message] [--autonomous] [--limit N]   with a message, send it and wait
                        for the reply; without, print the transcript`,
-			`pilldrops --json chat $SB`),
+			`pilldrops --json chat $SB`).needs("chat"),
 		group("chat-link", chatLinkVerbs(), `chat-link <id> [--read-only] [--autonomous]   a one-time code that pairs a messaging
                        app with this sandbox; chat-link rm <id> --confirm revokes every link`,
-			`pilldrops --json chat-link $SB --read-only`),
+			`pilldrops --json chat-link $SB --read-only`).needs("chat"),
 		group("channels", channelVerbs(), `channels <id>          which messaging channels can reach this sandbox`,
-			`pilldrops --json channels $SB`),
+			`pilldrops --json channels $SB`).needs("chat"),
 		group("audit", auditVerbs(), `audit [--limit N]      who did what in this org`,
 			`pilldrops --json audit --limit 1`),
 		{
@@ -367,17 +387,23 @@ func lookup(name string) (command, bool) {
 // commandPaths is the flat list an agent reads: "sandbox create", "fs ls",
 // and the bare verbs. Generated, so a verb cannot be removed from the table
 // and stay in the catalog.
-func commandPaths() []string {
+func commandPaths(supports func(string) bool) []string {
 	var out []string
 	for _, c := range commandTable() {
-		if c.humanOnly {
+		if c.humanOnly || (c.feature != "" && !supports(c.feature)) {
 			continue
 		}
-		if len(c.subs) == 0 {
+		subs := c.subs
+		for _, part := range c.optional {
+			if part.sub != "" && supports(part.feature) {
+				subs = append(subs[:len(subs):len(subs)], part.sub)
+			}
+		}
+		if len(subs) == 0 {
 			out = append(out, c.name)
 			continue
 		}
-		for _, s := range c.subs {
+		for _, s := range subs {
 			out = append(out, strings.TrimSpace(c.name+" "+s))
 		}
 	}
@@ -385,21 +411,32 @@ func commandPaths() []string {
 }
 
 // commandHelp renders the table's help blocks, two spaces in.
-func commandHelp(forAgents bool) string {
+func commandHelp(forAgents bool, supports func(string) bool) string {
 	var b strings.Builder
+	write := func(help string) {
+		for _, line := range strings.Split(help, "\n") {
+			fmt.Fprintf(&b, "  %s\n", line)
+		}
+	}
 	for _, c := range commandTable() {
-		if forAgents && c.humanOnly {
+		if (forAgents && c.humanOnly) || (c.feature != "" && !supports(c.feature)) {
 			continue
 		}
-		for _, line := range strings.Split(c.help, "\n") {
-			fmt.Fprintf(&b, "  %s\n", line)
+		write(c.help)
+		for _, part := range c.optional {
+			if supports(part.feature) {
+				write(part.help)
+			}
 		}
 	}
 	return b.String()
 }
 
-// usage prints the top-level help.
-func usage(w io.Writer) {
+// usage prints the top-level help for this server.
+func (c *cmdCtx) usage(w io.Writer) {
 	fmt.Fprint(w, "usage: pilldrops [--json] [--quiet] [--api-url URL] <command> [args]\n\ncommands:\n")
-	fmt.Fprint(w, commandHelp(false))
+	fmt.Fprint(w, commandHelp(false, c.supports))
+	if missing := c.unsupportedFeatures(); len(missing) > 0 {
+		fmt.Fprintf(w, "\nnot on this server: %s\n", strings.Join(missing, ", "))
+	}
 }
