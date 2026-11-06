@@ -90,3 +90,36 @@ func TestCustomerToolsRefuseWithoutWhatTheyNeed(t *testing.T) {
 		}
 	}
 }
+
+func TestToolsFollowServerFeatures(t *testing.T) {
+	be := &recordingBackend{}
+	coreOnly := func(string) bool { return false }
+
+	known := map[string]bool{}
+	for _, tl := range toolList() {
+		known[tl.name] = true
+	}
+	for feature, names := range optionalToolFeatures {
+		for _, name := range names {
+			if !known[name] {
+				t.Errorf("feature %s names tool %q, which does not exist", feature, name)
+			}
+		}
+	}
+
+	listed := map[string]bool{}
+	for _, d := range toolDefs(coreOnly) {
+		listed[d["name"].(string)] = true
+	}
+	if listed["list_volumes"] || listed["agent_ask"] || !listed["create_sandbox"] {
+		t.Errorf("core server lists %v", listed)
+	}
+	if ToolCountFor(coreOnly) != len(listed) || ToolCountFor(nil) != ToolCount() {
+		t.Errorf("counts: %d filtered for %d listed, %d unfiltered for %d", ToolCountFor(coreOnly), len(listed), ToolCountFor(nil), ToolCount())
+	}
+
+	raw := HandleMessageFor([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_volumes"}}`), be.fn, coreOnly)
+	if !strings.Contains(string(raw), "does not support list_volumes") || len(be.calls) != 0 {
+		t.Errorf("hidden tool: %s, backend calls %d", raw, len(be.calls))
+	}
+}

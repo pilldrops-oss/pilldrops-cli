@@ -45,7 +45,7 @@ func cmdMCP(c *cmdCtx, _ []string) int {
 		if len(line) == 0 {
 			continue
 		}
-		if resp := mcp.HandleMessage(line, be); resp != nil {
+		if resp := mcp.HandleMessageFor(line, be, c.supports); resp != nil {
 			_, _ = w.Write(resp)
 			_ = w.WriteByte('\n')
 			_ = w.Flush()

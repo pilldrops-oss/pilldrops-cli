@@ -49,7 +49,7 @@ func TestCatalogAndDispatchAgree(t *testing.T) {
 		}
 	}
 
-	paths := commandPaths()
+	paths := commandPaths(func(string) bool { return true })
 	if len(paths) < 20 {
 		t.Fatalf("only %d command paths — the table has drifted from how commands are "+
 			"declared, so this test is no longer checking anything", len(paths))
@@ -73,7 +73,7 @@ func TestCatalogNamesTheRealCredentialPath(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("SANDFORGE_CONFIG", "")
 	path := "~" + strings.TrimPrefix(configPath(), home)
-	if !strings.Contains(aiCatalog(), path) {
+	if !strings.Contains(aiCatalog(func(string) bool { return true }), path) {
 		t.Fatalf("catalog does not name %s", path)
 	}
 }

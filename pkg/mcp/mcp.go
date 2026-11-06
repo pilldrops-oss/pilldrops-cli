@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -77,6 +78,12 @@ func rawID(id json.RawMessage) any {
 // HandleMessage processes one JSON-RPC message (or a batch array) and returns
 // the serialized response, or nil for notifications.
 func HandleMessage(raw []byte, be Backend) []byte {
+	return HandleMessageFor(raw, be, nil)
+}
+
+// HandleMessageFor serves only the tools whose feature group supported allows,
+// so an agent never tries what its server lacks. A nil supported serves all.
+func HandleMessageFor(raw []byte, be Backend, supported func(feature string) bool) []byte {
 	trimmed := strings.TrimSpace(string(raw))
 	if strings.HasPrefix(trimmed, "[") {
 		var msgs []json.RawMessage
@@ -85,7 +92,7 @@ func HandleMessage(raw []byte, be Backend) []byte {
 		}
 		var out []json.RawMessage
 		for _, m := range msgs {
-			if r := handleOne(m, be); r != nil {
+			if r := handleOne(m, be, supported); r != nil {
 				out = append(out, r)
 			}
 		}
@@ -95,10 +102,10 @@ func HandleMessage(raw []byte, be Backend) []byte {
 		b, _ := json.Marshal(out)
 		return b
 	}
-	return handleOne(raw, be)
+	return handleOne(raw, be, supported)
 }
 
-func handleOne(raw []byte, be Backend) []byte {
+func handleOne(raw []byte, be Backend, supported func(string) bool) []byte {
 	var req request
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return replyErr(nil, -32700, "parse error: "+err.Error())
@@ -134,7 +141,7 @@ func handleOne(raw []byte, be Backend) []byte {
 	case "ping":
 		return reply(req.ID, map[string]any{})
 	case "tools/list":
-		return reply(req.ID, map[string]any{"tools": toolDefs()})
+		return reply(req.ID, map[string]any{"tools": toolDefs(supported)})
 	case "tools/call":
 		var p struct {
 			Name      string         `json:"name"`
@@ -143,8 +150,10 @@ func handleOne(raw []byte, be Backend) []byte {
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			return replyErr(req.ID, -32602, "invalid params: "+err.Error())
 		}
-		res := callTool(p.Name, p.Arguments, be)
-		return reply(req.ID, res)
+		if !toolServed(p.Name, supported) {
+			return reply(req.ID, toolError("this server does not support "+p.Name+" (tools/list shows the catalog)"))
+		}
+		return reply(req.ID, callTool(p.Name, p.Arguments, be))
 	default:
 		return replyErr(req.ID, -32601, "method not found: "+req.Method)
 	}
@@ -734,9 +743,12 @@ func toolList() []tool {
 	}, append(platformTools(), customerTools()...)...)
 }
 
-func toolDefs() []map[string]any {
+func toolDefs(supported func(string) bool) []map[string]any {
 	var defs []map[string]any
 	for _, t := range toolList() {
+		if !toolServed(t.name, supported) {
+			continue
+		}
 		defs = append(defs, map[string]any{
 			"name": t.name, "description": t.desc, "inputSchema": t.schema,
 		})
@@ -756,10 +768,44 @@ func callTool(name string, args map[string]any, be Backend) map[string]any {
 	return toolError("unknown tool: " + name + " (tools/list shows the catalog)")
 }
 
+// optionalToolFeatures ties tools to the feature group that serves them; a tool
+// matching none is core.
+var optionalToolFeatures = map[string][]string{
+	"agent":        {"agent_ask", "agent_decide_approval", "agent_get_turn", "agent_interrupt", "agent_list_approvals", "agent_list_turns", "agent_status"},
+	"cron":         {"create_cron_job", "delete_cron_job", "list_cron_jobs", "run_cron_job", "toggle_cron_job"},
+	"function":     {"create_function", "delete_function", "get_function", "get_function_logs", "list_functions"},
+	"integrations": {"list_integrations"},
+	"thread":       {"create_thread", "delete_thread", "get_thread", "list_threads"},
+	"volume":       {"create_volume", "delete_volume", "list_volumes"},
+}
+
+func toolServed(name string, supported func(string) bool) bool {
+	if supported == nil {
+		return true
+	}
+	for feature, names := range optionalToolFeatures {
+		if slices.Contains(names, name) {
+			return supported(feature)
+		}
+	}
+	return true
+}
+
 // ToolCount is how many tools this server serves. Exported so the CLI's agent
 // catalog can state the number instead of carrying a hand-typed one, which is
 // how it came to advertise 18 against 41.
 func ToolCount() int { return len(toolList()) }
+
+// ToolCountFor is ToolCount limited as HandleMessageFor limits the catalog.
+func ToolCountFor(supported func(string) bool) int {
+	n := 0
+	for _, t := range toolList() {
+		if toolServed(t.name, supported) {
+			n++
+		}
+	}
+	return n
+}
 
 // nonNil keeps an absent list from encoding as null, which the API reads as "no rules".
 func nonNil(v []any) []any {

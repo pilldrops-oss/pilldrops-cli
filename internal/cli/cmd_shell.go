@@ -60,7 +60,7 @@ func cmdShell(c *cmdCtx, args []string) int {
 			}
 		}
 	}()
-	return shellLoop(stdin, c.stdout, c.stderr, c.runInChild, &atPrompt)
+	return shellLoop(stdin, c.stdout, c.stderr, c.runInChild, c.usage, &atPrompt)
 }
 
 // runInChild runs one command in its own process rather than calling Run. The
@@ -104,7 +104,7 @@ func (c *cmdCtx) runInChild(args []string) int {
 
 // shellLoop reads and dispatches lines until exit, quit or end of input. A
 // failing command has already said why, so the only thing left to do is go on.
-func shellLoop(in io.Reader, out, errOut io.Writer, run func([]string) int, atPrompt *atomic.Bool) int {
+func shellLoop(in io.Reader, out, errOut io.Writer, run func([]string) int, help func(io.Writer), atPrompt *atomic.Bool) int {
 	for {
 		fmt.Fprint(out, shellPrompt)
 		atPrompt.Store(true)
@@ -129,7 +129,7 @@ func shellLoop(in io.Reader, out, errOut io.Writer, run func([]string) int, atPr
 		case verb[0] == "exit" || verb[0] == "quit":
 			return ExitOK
 		case verb[0] == "help" || verb[0] == "--help" || verb[0] == "-h":
-			usage(out)
+			help(out)
 			fmt.Fprintln(out, "\nin this shell: exit, quit or Ctrl-D leave; Ctrl-C stops the running command")
 		case len(verb) == 1 && verb[0] == "shell":
 			fmt.Fprintln(errOut, "pilldrops: already in the shell")

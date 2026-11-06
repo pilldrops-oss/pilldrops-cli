@@ -55,7 +55,7 @@ func runShell(t *testing.T, input string) (string, string, [][]string) {
 	code := shellLoop(strings.NewReader(input), &out, &errb, func(args []string) int {
 		ran = append(ran, args)
 		return Run(args, &out, &errb)
-	}, &atPrompt)
+	}, (&cmdCtx{}).usage, &atPrompt)
 	if code != ExitOK {
 		t.Fatalf("shell exited %d", code)
 	}
@@ -157,7 +157,7 @@ func TestCatalogKeepsAgentsOutOfTheShell(t *testing.T) {
 		t.Fatal("the shell's help block is in the catalog")
 	}
 	var help strings.Builder
-	usage(&help)
+	(&cmdCtx{}).usage(&help)
 	if !strings.Contains(help.String(), "a pilldrops> prompt") {
 		t.Fatal("the shell is missing from help")
 	}

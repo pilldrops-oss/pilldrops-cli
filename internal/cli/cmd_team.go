@@ -114,7 +114,12 @@ func teamLoginFlags(fs *flag.FlagSet) func(*verbCall) error {
 			if code == "" {
 				raw, err := cl.Raw("POST", "/cli/device/start", []byte("{}"), "application/json")
 				if err != nil {
-					return v.c.fail(fmt.Errorf("this portal cannot sign in the CLI for teams: %w", err))
+					wrapped := fmt.Errorf("this portal cannot sign in the CLI for teams: %w", err)
+					var apiErr *APIError
+					if errors.As(err, &apiErr) && apiErr.Status == 404 {
+						return v.c.fail(pathError{err: wrapped, hint: "this server has no team sign-in; name one that does with --portal"})
+					}
+					return v.c.fail(wrapped)
 				}
 				if *noWait {
 					return v.respond(raw)

@@ -173,7 +173,7 @@ func TestHibernateIsPauseAndStandbyIsSeparate(t *testing.T) {
 // bites; both entries must point at each other.
 func TestFreezeHelpNamesTheOtherVerb(t *testing.T) {
 	var b strings.Builder
-	usage(&b)
+	(&cmdCtx{}).usage(&b)
 	help := b.String()
 	_, block, ok := strings.Cut(help, "sandbox standby <id>")
 	if !ok {

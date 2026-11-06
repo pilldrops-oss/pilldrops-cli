@@ -22,6 +22,9 @@ type cmdCtx struct {
 	apiURL  string
 	stdout  io.Writer
 	stderr  io.Writer
+
+	featuresLoaded bool
+	features       []string // nil when the server did not say
 }
 
 // DefaultAPIURL is a PillDrops server on this machine, where the engine's quick
@@ -168,20 +171,26 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		if ctx.interactive() {
 			return cmdShell(ctx, nil)
 		}
-		usage(stderr)
+		ctx.usage(stderr)
 		return ExitUsage
 	}
 	cmd, cmdArgs := rest[0], rest[1:]
 	switch cmd {
 	case "help", "--help", "-h":
-		usage(stdout)
+		ctx.usage(stdout)
 		return ExitOK
 	}
 	if c, ok := lookup(cmd); ok {
+		// Team verbs use the portal they signed in to, not this server.
+		if c.feature != "" && c.name != "team" {
+			if err := ctx.requireFeature(c.feature); err != nil {
+				return ctx.fail(err)
+			}
+		}
 		return c.run(ctx, cmdArgs)
 	}
 	fmt.Fprintf(stderr, "pilldrops: unknown command %q\n\n", cmd)
-	usage(stderr)
+	ctx.usage(stderr)
 	return ExitUsage
 }
 
