@@ -19,6 +19,131 @@
     ],
     "type": "object"
   },
+  "agent_ask": {
+    "properties": {
+      "message": {
+        "description": "what to do",
+        "type": "string"
+      },
+      "mode": {
+        "description": "supervised, guided or autonomous; default the agent's own",
+        "type": "string"
+      },
+      "priority": {
+        "description": "jump the queue",
+        "type": "boolean"
+      },
+      "sandbox_id": {
+        "description": "sandbox id of an agent template",
+        "type": "string"
+      },
+      "thread": {
+        "description": "latest (default), new, or a thread id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "sandbox_id",
+      "message"
+    ],
+    "type": "object"
+  },
+  "agent_decide_approval": {
+    "properties": {
+      "approval_id": {
+        "description": "approval id",
+        "type": "string"
+      },
+      "decision": {
+        "description": "allow or deny",
+        "type": "string"
+      },
+      "sandbox_id": {
+        "description": "sandbox id of an agent template",
+        "type": "string"
+      }
+    },
+    "required": [
+      "sandbox_id",
+      "approval_id",
+      "decision"
+    ],
+    "type": "object"
+  },
+  "agent_get_turn": {
+    "properties": {
+      "sandbox_id": {
+        "description": "sandbox id of an agent template",
+        "type": "string"
+      },
+      "turn_id": {
+        "description": "turn id from agent_ask or agent_list_turns",
+        "type": "string"
+      }
+    },
+    "required": [
+      "sandbox_id",
+      "turn_id"
+    ],
+    "type": "object"
+  },
+  "agent_interrupt": {
+    "properties": {
+      "grace_seconds": {
+        "description": "seconds to stop politely",
+        "type": "number"
+      },
+      "sandbox_id": {
+        "description": "sandbox id of an agent template",
+        "type": "string"
+      },
+      "turn_id": {
+        "description": "turn id from agent_ask or agent_list_turns",
+        "type": "string"
+      }
+    },
+    "required": [
+      "sandbox_id",
+      "turn_id"
+    ],
+    "type": "object"
+  },
+  "agent_list_approvals": {
+    "properties": {
+      "sandbox_id": {
+        "description": "sandbox id of an agent template",
+        "type": "string"
+      }
+    },
+    "required": [
+      "sandbox_id"
+    ],
+    "type": "object"
+  },
+  "agent_list_turns": {
+    "properties": {
+      "sandbox_id": {
+        "description": "sandbox id of an agent template",
+        "type": "string"
+      }
+    },
+    "required": [
+      "sandbox_id"
+    ],
+    "type": "object"
+  },
+  "agent_status": {
+    "properties": {
+      "sandbox_id": {
+        "description": "sandbox id of an agent template",
+        "type": "string"
+      }
+    },
+    "required": [
+      "sandbox_id"
+    ],
+    "type": "object"
+  },
   "create_backup": {
     "properties": {
       "sandbox_id": {
@@ -28,6 +153,118 @@
     },
     "required": [
       "sandbox_id"
+    ],
+    "type": "object"
+  },
+  "create_cron_job": {
+    "properties": {
+      "agent_mode": {
+        "description": "guided or autonomous",
+        "type": "string"
+      },
+      "command": {
+        "description": "command to run, or the prompt with agent_mode",
+        "type": "string"
+      },
+      "name": {
+        "description": "label for the job",
+        "type": "string"
+      },
+      "sandbox_id": {
+        "description": "sandbox id, not its name",
+        "type": "string"
+      },
+      "schedule": {
+        "description": "cron expression, e.g. 0 2 * * *",
+        "type": "string"
+      },
+      "timezone": {
+        "description": "IANA zone the schedule is read in; default UTC",
+        "type": "string"
+      }
+    },
+    "required": [
+      "sandbox_id",
+      "schedule",
+      "command"
+    ],
+    "type": "object"
+  },
+  "create_function": {
+    "properties": {
+      "env": {
+        "description": "environment variables by name",
+        "type": "object"
+      },
+      "files": {
+        "description": "source files to include",
+        "items": {
+          "properties": {
+            "content": {
+              "description": "file text",
+              "type": "string"
+            },
+            "path": {
+              "description": "path in the function",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "content"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "max_replicas": {
+        "description": "burst ceiling",
+        "type": "integer"
+      },
+      "memory_mb": {
+        "description": "memory in MB",
+        "type": "integer"
+      },
+      "name": {
+        "description": "function name",
+        "type": "string"
+      },
+      "port": {
+        "description": "port the command listens on",
+        "type": "integer"
+      },
+      "start": {
+        "description": "command that serves the function",
+        "type": "string"
+      },
+      "template": {
+        "description": "template id; default the server's first",
+        "type": "string"
+      },
+      "vcpu": {
+        "description": "vCPUs",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "name",
+      "start"
+    ],
+    "type": "object"
+  },
+  "create_project": {
+    "properties": {
+      "name": {
+        "description": "project name",
+        "type": "string"
+      },
+      "plan": {
+        "description": "the project's plan",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
     ],
     "type": "object"
   },
@@ -158,6 +395,15 @@
     },
     "type": "object"
   },
+  "create_thread": {
+    "properties": {
+      "title": {
+        "description": "name for the thread",
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
   "create_volume": {
     "properties": {
       "name": {
@@ -171,6 +417,57 @@
     },
     "required": [
       "size_mb"
+    ],
+    "type": "object"
+  },
+  "delete_cron_job": {
+    "properties": {
+      "confirm": {
+        "description": "must be true; without it nothing happens",
+        "type": "boolean"
+      },
+      "id": {
+        "description": "job id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "confirm"
+    ],
+    "type": "object"
+  },
+  "delete_function": {
+    "properties": {
+      "confirm": {
+        "description": "must be true; without it nothing happens",
+        "type": "boolean"
+      },
+      "name": {
+        "description": "function name",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name",
+      "confirm"
+    ],
+    "type": "object"
+  },
+  "delete_project": {
+    "properties": {
+      "confirm": {
+        "description": "must be true; without it nothing happens",
+        "type": "boolean"
+      },
+      "id": {
+        "description": "project id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "confirm"
     ],
     "type": "object"
   },
@@ -224,6 +521,23 @@
     },
     "required": [
       "name",
+      "confirm"
+    ],
+    "type": "object"
+  },
+  "delete_thread": {
+    "properties": {
+      "confirm": {
+        "description": "must be true; without it nothing happens",
+        "type": "boolean"
+      },
+      "id": {
+        "description": "thread id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
       "confirm"
     ],
     "type": "object"
@@ -294,6 +608,34 @@
     },
     "type": "object"
   },
+  "get_function": {
+    "properties": {
+      "name": {
+        "description": "function name",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "type": "object"
+  },
+  "get_function_logs": {
+    "properties": {
+      "limit": {
+        "description": "lines to return",
+        "type": "integer"
+      },
+      "name": {
+        "description": "function name",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "type": "object"
+  },
   "get_logs": {
     "properties": {
       "limit": {
@@ -322,6 +664,18 @@
     ],
     "type": "object"
   },
+  "get_project": {
+    "properties": {
+      "id": {
+        "description": "project id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "type": "object"
+  },
   "get_sandbox": {
     "properties": {
       "sandbox_id": {
@@ -334,7 +688,32 @@
     ],
     "type": "object"
   },
+  "get_thread": {
+    "properties": {
+      "id": {
+        "description": "thread id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "type": "object"
+  },
   "get_usage": {
+    "properties": {},
+    "type": "object"
+  },
+  "list_audit_log": {
+    "properties": {
+      "limit": {
+        "description": "entries to return",
+        "type": "integer"
+      }
+    },
+    "type": "object"
+  },
+  "list_cron_jobs": {
     "properties": {},
     "type": "object"
   },
@@ -358,6 +737,18 @@
     ],
     "type": "object"
   },
+  "list_functions": {
+    "properties": {},
+    "type": "object"
+  },
+  "list_images": {
+    "properties": {},
+    "type": "object"
+  },
+  "list_integrations": {
+    "properties": {},
+    "type": "object"
+  },
   "list_port_forwards": {
     "properties": {
       "sandbox_id": {
@@ -368,6 +759,22 @@
     "required": [
       "sandbox_id"
     ],
+    "type": "object"
+  },
+  "list_project_runs": {
+    "properties": {
+      "id": {
+        "description": "project id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "type": "object"
+  },
+  "list_projects": {
+    "properties": {},
     "type": "object"
   },
   "list_sandboxes": {
@@ -400,6 +807,10 @@
     "type": "object"
   },
   "list_templates": {
+    "properties": {},
+    "type": "object"
+  },
+  "list_threads": {
     "properties": {},
     "type": "object"
   },
@@ -564,6 +975,18 @@
     ],
     "type": "object"
   },
+  "run_cron_job": {
+    "properties": {
+      "id": {
+        "description": "job id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "type": "object"
+  },
   "save_checkpoint": {
     "properties": {
       "name": {
@@ -677,6 +1100,39 @@
     ],
     "type": "object"
   },
+  "start_project_run": {
+    "properties": {
+      "id": {
+        "description": "project id",
+        "type": "string"
+      },
+      "services": {
+        "description": "planned services and their sandboxes",
+        "items": {
+          "properties": {
+            "sandbox_id": {
+              "description": "sandbox id",
+              "type": "string"
+            },
+            "service_id": {
+              "description": "planned service",
+              "type": "string"
+            }
+          },
+          "required": [
+            "service_id",
+            "sandbox_id"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "type": "object"
+  },
   "start_server": {
     "properties": {
       "cmd": {
@@ -695,6 +1151,23 @@
     "required": [
       "sandbox_id",
       "cmd"
+    ],
+    "type": "object"
+  },
+  "toggle_cron_job": {
+    "properties": {
+      "enabled": {
+        "description": "true to run it on schedule",
+        "type": "boolean"
+      },
+      "id": {
+        "description": "job id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "enabled"
     ],
     "type": "object"
   },
