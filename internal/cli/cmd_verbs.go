@@ -34,6 +34,8 @@ type apiVerb struct {
 	// flags registers the verb's flags and returns what turns them into a request.
 	flags func(*flag.FlagSet) func(*verbCall) error
 	run   func(*verbCall) int // replaces the single request
+	// client replaces the stored API key's client, for verbs that need a person.
+	client func(*cmdCtx) (*Client, error)
 }
 
 // verbCall is one invocation; a prepare step may change anything on it.
@@ -137,7 +139,11 @@ func runVerb(c *cmdCtx, group string, verbs []apiVerb, args []string) int {
 		fmt.Fprintf(c.stderr, "pilldrops %s: this cannot be undone — re-run with --confirm\n", name)
 		return ExitUsage
 	}
-	cl, err := c.client()
+	newClient := c.client
+	if v.client != nil {
+		newClient = func() (*Client, error) { return v.client(c) }
+	}
+	cl, err := newClient()
 	if err != nil {
 		return c.fail(err)
 	}

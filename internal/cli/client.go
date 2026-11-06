@@ -31,6 +31,7 @@ func (e *APIError) Error() string { return fmt.Sprintf("%s (HTTP %d)", e.Msg, e.
 type Client struct {
 	Base string // e.g. https://portal.example — no trailing slash
 	Key  string
+	Org  string // sent as X-PD-Org: the team org a team session acts for
 	HTTP *http.Client
 }
 
@@ -55,6 +56,9 @@ func (c *Client) Raw(method, path string, body []byte, contentType string) ([]by
 		}
 		if c.Key != "" {
 			req.Header.Set("Authorization", "Bearer "+c.Key)
+		}
+		if c.Org != "" {
+			req.Header.Set("X-PD-Org", c.Org)
 		}
 		if contentType != "" {
 			req.Header.Set("Content-Type", contentType)

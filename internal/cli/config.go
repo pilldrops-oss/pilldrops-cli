@@ -14,6 +14,10 @@ type Config struct {
 	APIURL string `json:"api_url"`
 	Key    string `json:"key"`
 	Email  string `json:"email"`
+	// A team session stands for a person, unlike Key, and usually a different server.
+	TeamSession string `json:"team_session,omitempty"`
+	TeamPortal  string `json:"team_portal,omitempty"`
+	TeamEmail   string `json:"team_email,omitempty"`
 }
 
 // configPath honours SANDFORGE_CONFIG (tests, unusual setups), defaulting to
