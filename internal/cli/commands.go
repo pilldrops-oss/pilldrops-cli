@@ -30,6 +30,9 @@ type command struct {
 	// with a sandbox created for the run. An example nobody runs rots into
 	// something that reads well and 404s.
 	example string
+
+	// humanOnly keeps a verb in `help` and out of the agent catalog.
+	humanOnly bool
 }
 
 // commandTable is a function, not a var: `ai` is itself a command, so the
@@ -39,7 +42,9 @@ func commandTable() []command {
 	return []command{
 		{
 			name: "login", run: cmdLogin,
-			help:    `login [--key K] [--api-url URL]   store a credential (--key is the scripted path)`,
+			help: `login [--key K] [--api-url URL]   verify and store a credential. On a terminal, with
+                       no --key, it asks for the server and the key (echo off);
+                       anywhere else --key is required, or it exits 2`,
 			example: `pilldrops --json login --key $PILLDROPS_API_KEY`,
 		},
 		{
@@ -80,10 +85,11 @@ func commandTable() []command {
 			name: "sandbox", run: cmdSandbox,
 			subs: []string{"create", "ls", "get", "rm", "pause", "resume", "fork", "open", "ports",
 				"set-port", "rename", "expose", "forwards", "unexpose", "networks", "standby",
-				"refresh", "set-timeout", "set-idle", "set-hibernate", "share", "unshare"},
+				"refresh", "set-timeout", "set-idle", "set-hibernate", "share", "unshare", "integrations"},
 			help: `sandbox create|ls|get|rm|pause|resume|fork
     create flags: --template --from-snapshot --image --start --port (xN) --env (xN)
                   --vcpu --mem --storage --timeout --idle --slug --networks
+                  --volume <id>:<path> (xN)
 sandbox open <id> [--print] [--port <n>]   open the sandbox's app in a browser; --port opens any port you started a server on (flags in either order)
 sandbox ports <id>     every port the platform probes, which are listening, and an HTTPS link for each
                        (https://<port>-<id>.<domain>/); set-port <id> <port>
@@ -110,6 +116,9 @@ sandbox set-timeout <id> <secs>   hard lifetime from now (-1 = persistent, plan
                        (-1 = never, 0 = platform default)
 sandbox share|unshare <id>    org-visible or private; share wipes the agent
                        logins inside first, and unshare does not restore them
+sandbox integrations <id> [add|rm <server>... [--env K=V ...]]   its MCP servers. The
+                       API replaces the whole set and keeps no credentials, so
+                       pass --env again for every server that still needs one
 sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
                        and is never prompted for, as on every destructive verb.
                        A missing <id> IS asked for, on a terminal only`,
@@ -126,7 +135,7 @@ sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
 			example: `pilldrops --json exec $SB -- echo catalog-example`,
 		},
 		{
-			name: "connect", aliases: []string{"ssh", "shell"}, run: cmdConnect,
+			name: "connect", aliases: []string{"ssh"}, run: cmdConnect,
 			help: `connect <id>           interactive shell (a real PTY: editors, pagers, REPLs and
                        installers work, unlike exec which buffers one command).
                        ssh is an alias. --print emits the websocket URL instead`,
@@ -134,6 +143,12 @@ sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
 			// GET the sandbox, find terminal_url, build the websocket URL —
 			// without holding the sweep open.
 			example: `pilldrops --json connect $SB --print`,
+		},
+		{
+			name: "shell", run: cmdShell, humanOnly: true,
+			help: `shell                  a pilldrops> prompt for every command here, for people at a
+                       terminal; bare pilldrops opens it too`,
+			example: `pilldrops --json version`, // a prompt needs a terminal to read from
 		},
 		{
 			name: "test", run: cmdTest,
@@ -159,7 +174,7 @@ sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
 			help: `cp [-r] <src> <dst>    copy files; sandbox side is <id>:<path>, "-" is stdin/stdout,
                        relative and ~/ paths are the sandbox home; -r copies a
                        directory under the destination (like scp)`,
-			example: `pilldrops cp $SB:/etc/hostname -`,
+			example: `pilldrops cp $SB:.bashrc -`,
 		},
 		{
 			name: "env", run: cmdEnv, subs: []string{"set", "list", "scope", "rm"},
@@ -202,7 +217,7 @@ sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
 			name: "fs", run: cmdFS, subs: []string{"ls", "stat", "mkdir", "mv", "rm"},
 			help: `fs ls|stat|mkdir|rm <id> <path>         browse and edit the sandbox filesystem
                        (fs mv <id> <src> <dst>); cp moves the bytes`,
-			example: `pilldrops --json fs ls $SB /`,
+			example: `pilldrops --json fs ls $SB .`,
 		},
 		{
 			name: "ps", run: cmdPs,
@@ -234,6 +249,66 @@ history <id>           one past sandbox: charge, runtime, logs`,
 			name: "image", run: cmdImage, subs: []string{"build"},
 			help:    `image build <dir> -t N build a custom image (Dockerfile at <dir> root) → --image N`,
 			example: `pilldrops --json image build $DOCKERDIR -t catalog-example`,
+		},
+		group("volume", volumeVerbs(), `volume create [name] --size-mb N | list | get <id> | rm <id> --confirm
+                       a disk that outlives its sandbox; attach it with
+                       sandbox create --volume <id>:<path>`,
+			`pilldrops --json volume list`),
+		// Every agent route 404s for a template that is not kind=agent, and the
+		// sweep's sandbox is a plain one, so it checks the catalog those come from.
+		group("agent", agentVerbs(), `agent status|models|turns|threads|tokens|approvals|policy|webhooks|isolation|connect <id>
+                       read an agent workstation (connect mints a token each call)
+agent budget <id> [--cap USD]   read or set the daily spend cap (0 clears it)
+agent ask <id> <message> [--mode supervised|guided|autonomous] [--thread T]
+                       [--priority] [--wait]   submit a turn; --wait polls until it
+                       ends, prints its response, and exits 1 unless it succeeded
+agent turn <id> <turn>; agent thread <id> <thread>
+agent interrupt <id> <turn> [--grace N]; agent dequeue <id> <turn> --confirm
+agent events <id> [--since N] [-f]   the journal; without -f it stops when the
+                       journal goes quiet. --json gives one array and refuses -f
+agent token create <id> --scope agent:read ... [--label L] [--ttl S]
+agent token rm <id> <tokenID> --confirm; agent token rotate <id> <tokenID>
+agent share <id> [--scope ...]   a one-time link (never the token itself)
+agent approve <id> <approvalID> --allow|--deny
+agent webhook add <id> <url> --event E ...; agent webhook rm <id> <hookID> --confirm;
+                       agent webhook test <id> <hookID>. agent webhooks <id> lists
+                       the events that can be delivered (turn.completed, turn.failed, …)`,
+			`pilldrops --json templates`),
+		group("cron", cronVerbs(), `cron list | create <sandbox> <schedule> <command> [--name N] [--timezone Z]
+                       [--agent-mode guided|autonomous] | rm <id> --confirm |
+                       run <id> (exit 1 if the job failed) | toggle <id> --on|--off`,
+			`pilldrops --json cron list`),
+		group("function", functionVerbs(), `function list | create <name> --start CMD [--template T] [--port N] [--vcpu N]
+                       [--mem MB] [--max-replicas N] [--env K=V ...] [--file local[:remote] ...]
+                       | get|code|logs|metrics <name> | rm <name> --confirm`,
+			`pilldrops --json function list`),
+		group("project", projectVerbs(), `project list | create <name> [--plan TEXT] | get <id> | rm <id> --confirm (archives)
+                       | runs <id> | run <id> [--service service:sandbox ...]
+                       (run records a run against the plan; it starts nothing)`,
+			`pilldrops --json project list`),
+		group("thread", threadVerbs(), `thread list | create [--title T] | get <id> | rm <id> --confirm
+                       stored transcripts, as the dashboard keeps them; a thread
+                       runs nothing. agent ask gives work to an agent`,
+			`pilldrops --json thread list`),
+		group("integrations", integrationVerbs(), `integrations           the MCP servers that can be switched on
+                       (sandbox integrations <id> switches them)`,
+			`pilldrops --json integrations`),
+		group("chat", chatVerbs(), `chat <id> [message] [--autonomous] [--limit N]   with a message, send it and wait
+                       for the reply; without, print the transcript`,
+			`pilldrops --json chat $SB`),
+		group("chat-link", chatLinkVerbs(), `chat-link <id> [--read-only] [--autonomous]   a one-time code that pairs a messaging
+                       app with this sandbox; chat-link rm <id> --confirm revokes every link`,
+			`pilldrops --json chat-link $SB --read-only`),
+		group("channels", channelVerbs(), `channels <id>          which messaging channels can reach this sandbox`,
+			`pilldrops --json channels $SB`),
+		group("audit", auditVerbs(), `audit [--limit N]      who did what in this org`,
+			`pilldrops --json audit --limit 1`),
+		{
+			name: "api", run: cmdAPI,
+			help: `api <METHOD> </v1/path> [--data JSON | --data -]   any /v1 route with the stored
+                       credential, for what has no typed verb; same exit codes,
+                       and no --confirm gate: this is the raw API`,
+			example: `pilldrops --json api GET /v1/whoami`,
 		},
 		{
 			name: "doctor", run: cmdDoctor,
@@ -289,21 +364,27 @@ func lookup(name string) (command, bool) {
 func commandPaths() []string {
 	var out []string
 	for _, c := range commandTable() {
+		if c.humanOnly {
+			continue
+		}
 		if len(c.subs) == 0 {
 			out = append(out, c.name)
 			continue
 		}
 		for _, s := range c.subs {
-			out = append(out, c.name+" "+s)
+			out = append(out, strings.TrimSpace(c.name+" "+s))
 		}
 	}
 	return out
 }
 
 // commandHelp renders the table's help blocks, two spaces in.
-func commandHelp() string {
+func commandHelp(forAgents bool) string {
 	var b strings.Builder
 	for _, c := range commandTable() {
+		if forAgents && c.humanOnly {
+			continue
+		}
 		for _, line := range strings.Split(c.help, "\n") {
 			fmt.Fprintf(&b, "  %s\n", line)
 		}
@@ -314,5 +395,5 @@ func commandHelp() string {
 // usage prints the top-level help.
 func usage(w io.Writer) {
 	fmt.Fprint(w, "usage: pilldrops [--json] [--quiet] [--api-url URL] <command> [args]\n\ncommands:\n")
-	fmt.Fprint(w, commandHelp())
+	fmt.Fprint(w, commandHelp(false))
 }

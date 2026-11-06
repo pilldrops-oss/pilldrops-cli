@@ -67,6 +67,17 @@ func TestCatalogAndDispatchAgree(t *testing.T) {
 	}
 }
 
+// The catalog states where the credential lives, and that is configPath's call.
+func TestCatalogNamesTheRealCredentialPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SANDFORGE_CONFIG", "")
+	path := "~" + strings.TrimPrefix(configPath(), home)
+	if !strings.Contains(aiCatalog(), path) {
+		t.Fatalf("catalog does not name %s", path)
+	}
+}
+
 func TestAICatalogJSON(t *testing.T) {
 	code, out, _ := runCLI(t, "", "--json", "ai")
 	if code != ExitOK {

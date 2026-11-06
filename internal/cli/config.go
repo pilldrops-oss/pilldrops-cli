@@ -1,6 +1,5 @@
-// Package cli implements the sandforge customer CLI: dashboard-identical Clerk
-// login, sandbox lifecycle, exec, logs, files, and inspection. Output is
-// AI-operable: --json everywhere, stable exit codes, no prompts without a TTY.
+// Package cli implements the sandforge customer CLI: login, sandbox lifecycle,
+// exec, logs, files, and inspection. Output is AI-operable: --json everywhere, stable exit codes, no prompts without a TTY.
 package cli
 
 import (

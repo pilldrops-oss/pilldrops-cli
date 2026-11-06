@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"sort"
 )
 
@@ -36,17 +37,22 @@ func getAndPrint(c *cmdCtx, path string) int {
 		printJSON(c.stdout, out)
 		return ExitOK
 	}
-	keys := make([]string, 0, len(out))
-	for k := range out {
+	printKV(c.stdout, out)
+	return ExitOK
+}
+
+// printKV renders an object as sorted key/value rows.
+func printKV(w io.Writer, obj map[string]any) {
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	rows := [][]string{}
 	for _, k := range keys {
-		rows = append(rows, []string{k, renderValue(out[k])})
+		rows = append(rows, []string{k, renderValue(obj[k])})
 	}
-	table(c.stdout, rows)
-	return ExitOK
+	table(w, rows)
 }
 
 // renderValue keeps a nested object on one line rather than pretty-printing a

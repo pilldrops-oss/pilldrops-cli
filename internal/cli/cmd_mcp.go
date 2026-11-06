@@ -16,29 +16,13 @@ import (
 func cmdMCP(c *cmdCtx, _ []string) int {
 	cl, err := c.client()
 	if err != nil {
-		// Not logged in: auto-run the browser sign-in (same flow as
-		// `pilldrops login`) so connecting the MCP server IS the login. The
-		// browser shows the themed "signed in" page; we confirm on stderr.
+		// A stdio server has no one to ask: serve, and let each tool explain.
 		base, _ := resolveCreds(c.apiURL)
 		if base == "" {
 			base = DefaultAPIURL
 		}
 		cl = &Client{Base: base}
-		if os.Getenv("PILLDROPS_NO_BROWSER") == "" {
-			fmt.Fprintln(c.stderr, "pilldrops mcp: not logged in — opening browser to sign in…")
-			if key, lerr := browserLogin(c, base); lerr == nil {
-				vcl := &Client{Base: base, Key: key}
-				if id, werr := whoami(vcl); werr == nil {
-					_ = SaveConfig(Config{APIURL: base, Key: key, Email: id.Email})
-					cl = vcl
-					fmt.Fprintf(c.stderr, "pilldrops mcp: ✓ signed in as %s\n", id.label())
-				}
-			} else {
-				fmt.Fprintf(c.stderr, "pilldrops mcp: browser sign-in failed (%v) — serving anyway; tools will explain how to authenticate\n", lerr)
-			}
-		} else {
-			fmt.Fprintln(c.stderr, "pilldrops mcp: not logged in — tools will fail until `pilldrops login` (serving anyway)")
-		}
+		fmt.Fprintln(c.stderr, "pilldrops mcp: not logged in — tools will fail until `pilldrops login` (serving anyway)")
 	}
 
 	be := func(method, path string, body []byte, ctype string) (int, []byte, error) {

@@ -2,10 +2,8 @@ package cli
 
 import (
 	"bytes"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -87,55 +85,16 @@ func TestLoginWithBadKeyFails(t *testing.T) {
 	}
 }
 
-func TestBrowserLoginCallbackFlow(t *testing.T) {
-	srv := fakePortalAuth(t)
-	defer srv.Close()
-	t.Setenv("SANDFORGE_CONFIG", filepath.Join(t.TempDir(), "config.json"))
-
-	restore := openBrowser
-	openBrowser = func(authURL string) error {
-		u, err := url.Parse(authURL)
-		if err != nil {
-			return err
+// With nothing to ask and no key given, login must refuse at once: the old
+// browser flow waited on a route the server no longer has.
+func TestLoginWithoutKeyOffATerminalIsUsage(t *testing.T) {
+	for _, args := range [][]string{{"login"}, {"--json", "login"}} {
+		code, out, errS := runCLI(t, "http://unused.invalid", args...)
+		if code != ExitUsage {
+			t.Fatalf("%v = %d, want %d", args, code, ExitUsage)
 		}
-		if u.Path != "/cli/auth" {
-			return fmt.Errorf("browser sent to %q, want /cli/auth", u.Path)
+		if out != "" || !strings.Contains(errS, loginUsage) {
+			t.Fatalf("%v stdout=%q stderr=%q, want only the usage line", args, out, errS)
 		}
-		port, state := u.Query().Get("port"), u.Query().Get("state")
-		go http.Get(fmt.Sprintf("http://127.0.0.1:%s/callback?state=%s&key=sfc_good&email=a%%40b.c", port, state))
-		return nil
-	}
-	defer func() { openBrowser = restore }()
-
-	var out, errb bytes.Buffer
-	if code := Run([]string{"login", "--api-url", srv.URL}, &out, &errb); code != ExitOK {
-		t.Fatalf("browser login = %d stderr=%s", code, errb.String())
-	}
-	if cfg, _ := LoadConfig(); cfg.Key != "sfc_good" || cfg.Email != "a@b.c" {
-		t.Fatalf("stored config = %+v", cfg)
-	}
-}
-
-func TestBrowserLoginRejectsWrongState(t *testing.T) {
-	srv := fakePortalAuth(t)
-	defer srv.Close()
-	t.Setenv("SANDFORGE_CONFIG", filepath.Join(t.TempDir(), "config.json"))
-
-	restore := openBrowser
-	openBrowser = func(authURL string) error {
-		u, _ := url.Parse(authURL)
-		port := u.Query().Get("port")
-		go http.Get(fmt.Sprintf("http://127.0.0.1:%s/callback?state=deadbeefdeadbeef&key=sfc_good&email=x", port))
-		return nil
-	}
-	defer func() { openBrowser = restore }()
-	t.Setenv("SANDFORGE_LOGIN_TIMEOUT", "1s")
-
-	var out, errb bytes.Buffer
-	if code := Run([]string{"login", "--api-url", srv.URL}, &out, &errb); code == ExitOK {
-		t.Fatal("login with forged state succeeded")
-	}
-	if cfg, _ := LoadConfig(); cfg.Key != "" {
-		t.Fatal("forged key was stored")
 	}
 }

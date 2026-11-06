@@ -1,18 +1,18 @@
 package cli
 
 import (
-	"crypto/rand"
-	"crypto/subtle"
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
-	"net"
-	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
-	"time"
+	"strings"
+	"syscall"
+
+	"golang.org/x/term"
 )
 
 // openBrowser launches the system browser; swapped out in tests.
@@ -89,7 +89,7 @@ func whoami(cl *Client) (identity, error) {
 func cmdLogin(c *cmdCtx, args []string) int {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.SetOutput(c.stderr)
-	key := fs.String("key", "", "store an existing API key instead of browser login")
+	key := fs.String("key", "", "API key to store; omitted on a terminal, it is asked for with echo off")
 	apiURL := fs.String("api-url", "", "portal URL (defaults to the global --api-url / PILLDROPS_API_URL, then "+DefaultAPIURL+")")
 	if err := fs.Parse(args); err != nil {
 		return ExitUsage
@@ -103,10 +103,11 @@ func cmdLogin(c *cmdCtx, args []string) int {
 	}
 
 	gotKey := *key
-	if gotKey == "" {
-		var err error
-		if gotKey, err = browserLogin(c, base); err != nil {
-			return c.fail(err)
+	asked := gotKey == ""
+	if asked {
+		var ok bool
+		if base, gotKey, ok = c.askCredential(base); !ok {
+			return ExitUsage
 		}
 	}
 
@@ -114,6 +115,9 @@ func cmdLogin(c *cmdCtx, args []string) int {
 	cl := &Client{Base: base, Key: gotKey}
 	id, err := whoami(cl)
 	if err != nil {
+		if asked {
+			fmt.Fprintf(c.stderr, "%s did not accept that key; nothing was stored\n", base)
+		}
 		return c.fail(err)
 	}
 	if err := SaveConfig(Config{APIURL: base, Key: gotKey, Email: id.Email}); err != nil {
@@ -145,126 +149,63 @@ func identityJSON(id identity, extra map[string]any) map[string]any {
 	return out
 }
 
-// browserLogin runs the localhost-callback dance against <base>/cli/auth.
-func browserLogin(c *cmdCtx, base string) (string, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return "", err
-	}
-	defer ln.Close()
-	port := ln.Addr().(*net.TCPAddr).Port
+const loginUsage = "usage: pilldrops login --key <key> [--api-url URL]"
 
-	stateB := make([]byte, 16)
-	if _, err := rand.Read(stateB); err != nil {
-		return "", fmt.Errorf("generating login state: %w", err)
+// askCredential is the terminal half of login. Everything automated gets the
+// usage line, because nothing can answer a question there.
+func (c *cmdCtx) askCredential(base string) (server, key string, ok bool) {
+	if !c.promptable() {
+		fmt.Fprintln(c.stderr, loginUsage)
+		return "", "", false
 	}
-	state := hex.EncodeToString(stateB)
-
-	type result struct {
-		key string
-		err error
+	server, ok = c.ask("Server URL", base)
+	if !ok {
+		fmt.Fprintln(c.stderr, loginUsage)
+		return "", "", false
 	}
-	done := make(chan result, 1)
-	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/callback" {
-			http.NotFound(w, r)
-			return
-		}
-		q := r.URL.Query()
-		if subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1 {
-			http.Error(w, "state mismatch — close this tab and retry", http.StatusForbidden)
-			done <- result{err: fmt.Errorf("login callback state mismatch")}
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, loginDoneHTML)
-		done <- result{key: q.Get("key")}
-	})}
-	go srv.Serve(ln)
-	defer srv.Close()
-
-	authURL := fmt.Sprintf("%s/cli/auth?port=%d&state=%s", base, port, state)
-	if !c.quiet {
-		fmt.Fprintf(c.stderr, "Opening browser for sign-in… if it does not open, visit:\n  %s\n", authURL)
+	server = strings.TrimRight(server, "/")
+	if u, err := url.Parse(server); err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		fmt.Fprintf(c.stderr, "pilldrops login: %q is not an http(s) URL\n", server)
+		return "", "", false
 	}
-	if err := openBrowser(authURL); err != nil {
-		fmt.Fprintf(c.stderr, "could not open browser (%v) — open the URL above manually\n", err)
+	fmt.Fprintf(c.stderr, "Mint a key at %s/dashboard (API keys), then paste it here.\n", server)
+	key, ok = c.askSecret("API key")
+	if !ok {
+		fmt.Fprintln(c.stderr, loginUsage)
 	}
-
-	timeout := 3 * time.Minute
-	if v := os.Getenv("SANDFORGE_LOGIN_TIMEOUT"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			timeout = d
-		}
-	}
-	select {
-	case res := <-done:
-		if res.err != nil {
-			return "", res.err
-		}
-		if res.key == "" {
-			return "", fmt.Errorf("login callback carried no key")
-		}
-		return res.key, nil
-	case <-time.After(timeout):
-		return "", fmt.Errorf("login timed out after %s", timeout)
-	}
+	return server, key, ok
 }
 
-// loginDoneHTML is the themed success page shown after `pilldrops login`. It
-// matches the console's light theme, immediately strips the key + state from
-// the visible URL/history (they only ever traveled over localhost, but shouldn't
-// linger in browser history), and auto-closes the tab — falling back to a clear
-// "you can close this tab" message when the browser blocks window.close() for a
-// user-opened tab.
-const loginDoneHTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SandForge — signed in</title>
-<style>
-  :root{--bg:#fafafa;--card:#fff;--bd:#ececec;--fg:#0a0a0a;--muted:#6b7280;--ok:#16a34a}
-  *{box-sizing:border-box}
-  html,body{height:100%;margin:0}
-  body{background:var(--bg);color:var(--fg);display:flex;align-items:center;justify-content:center;
-    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
-    -webkit-font-smoothing:antialiased}
-  .card{background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:40px 44px;
-    max-width:420px;width:calc(100% - 32px);text-align:center;
-    box-shadow:0 1px 2px rgba(0,0,0,.04),0 8px 30px rgba(0,0,0,.06)}
-  .mark{width:44px;height:44px;border:2px solid var(--fg);border-radius:11px;margin:0 auto 22px;
-    display:flex;align-items:center;justify-content:center}
-  .mark span{width:16px;height:16px;border:2px solid var(--fg);border-radius:4px}
-  .check{width:26px;height:26px;border-radius:50%;background:var(--ok);display:inline-flex;
-    align-items:center;justify-content:center;vertical-align:middle;margin-right:9px}
-  .check svg{width:15px;height:15px}
-  h1{font-size:19px;font-weight:600;margin:0 0 8px;letter-spacing:-.01em;display:flex;
-    align-items:center;justify-content:center}
-  p{margin:0;color:var(--muted);font-size:14px;line-height:1.55}
-  .hint{margin-top:20px;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#9ca3af}
-  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ok);
-    margin-right:7px;vertical-align:middle}
-</style></head>
-<body>
-  <div class="card">
-    <div class="mark"><span></span></div>
-    <h1><span class="check"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.5"
-      stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>Signed in</h1>
-    <p>You're authenticated with SandForge.<br>Return to your terminal to continue.</p>
-    <div class="hint"><span class="dot"></span><span id="hint">this tab will close automatically…</span></div>
-  </div>
-  <script>
-    // Strip key + state from the URL bar and history right away.
-    try { history.replaceState({}, document.title, location.pathname); } catch (e) {}
-    // Try to auto-close (works when the tab was opened by a script); otherwise
-    // leave a clear instruction.
-    setTimeout(function(){
-      window.close();
-      setTimeout(function(){
-        var h = document.getElementById('hint');
-        if (h) h.textContent = 'you can close this tab';
-      }, 400);
-    }, 1500);
-  </script>
-</body></html>`
+// askSecret reads one line with echo off. ReadPassword keeps ISIG, so unlike
+// ask, a ^C here would kill the process with the terminal still not echoing.
+func (c *cmdCtx) askSecret(question string) (string, bool) {
+	fd, _ := rawFD()
+	state, err := term.GetState(fd)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "pilldrops: cannot read the terminal: %v\n", err)
+		return "", false
+	}
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigs)
+	read := make(chan struct{})
+	defer close(read)
+	go func() {
+		select {
+		case <-sigs:
+			_ = term.Restore(fd, state)
+			fmt.Fprintln(c.stderr)
+			os.Exit(ExitUsage) // only reachable with a real TTY, never under test
+		case <-read:
+		}
+	}()
+
+	fmt.Fprintf(c.stderr, "%s: ", question)
+	line, err := term.ReadPassword(fd)
+	fmt.Fprintln(c.stderr) // the newline that ended it was not echoed either
+	secret := strings.TrimSpace(string(line))
+	return secret, err == nil && secret != ""
+}
 
 func cmdLogout(c *cmdCtx, _ []string) int {
 	// Drop the credential but keep the portal URL, so a follow-up

@@ -41,7 +41,7 @@ var knownSandboxSub = map[string]bool{
 	"expose": true, "forwards": true, "unexpose": true,
 	"fork": true, "share": true, "unshare": true,
 	"ports": true, "set-port": true, "rename": true, "networks": true,
-	"standby": true, "refresh": true,
+	"standby": true, "refresh": true, "integrations": true,
 	// hibernate is pause under the name the other tool gives the same act —
 	// writing memory to disk. Their `pause` is our `standby`, so a migrating
 	// user's `pause` cannot be rescued without breaking every script that
@@ -53,7 +53,7 @@ var knownSandboxSub = map[string]bool{
 
 // sandboxSubUsage is the full subcommand list, in the order the top-level help
 // introduces them. Keep it in step with knownSandboxSub above.
-const sandboxSubUsage = "create|ls|get|open|rename|rm|pause|hibernate|standby|resume|refresh|fork|share|unshare|ports|set-port|set-timeout|set-idle|set-hibernate|expose|forwards|unexpose|networks"
+const sandboxSubUsage = "create|ls|get|open|rename|rm|pause|hibernate|standby|resume|refresh|fork|share|unshare|ports|set-port|set-timeout|set-idle|set-hibernate|expose|forwards|unexpose|networks|integrations"
 
 // sandboxVisibility flips a sandbox between private and org-visible. Sharing
 // removes the agent logins inside it first and prints what went; unsharing
@@ -136,6 +136,8 @@ func cmdSandbox(c *cmdCtx, args []string) int {
 		return sandboxForwards(c, cl, subArgs)
 	case "unexpose":
 		return sandboxUnexpose(c, cl, subArgs)
+	case "integrations":
+		return sandboxIntegrations(c, cl, subArgs)
 	case "create":
 		fs := flag.NewFlagSet("create", flag.ContinueOnError)
 		fs.SetOutput(c.stderr)
@@ -157,8 +159,19 @@ func cmdSandbox(c *cmdCtx, args []string) int {
 		fs.Var(&ports, "port", "published app port for preview, repeatable (your app must bind $PORT); omit to use the default app port")
 		var env stringList
 		fs.Var(&env, "env", "environment variable KEY=VAL, repeatable")
+		var volumes stringList
+		fs.Var(&volumes, "volume", "attach a volume as <id>:<path>, repeatable (`pilldrops volume create`)")
 		if err := fs.Parse(subArgs); err != nil {
 			return ExitUsage
+		}
+		mounts := make([]map[string]string, 0, len(volumes))
+		for _, v := range volumes {
+			id, path, ok := strings.Cut(v, ":")
+			if !ok || id == "" || path == "" {
+				fmt.Fprintf(c.stderr, "pilldrops sandbox create: --volume %q is not <id>:<path>\n", v)
+				return ExitUsage
+			}
+			mounts = append(mounts, map[string]string{"id": id, "path": path})
 		}
 		// client tags this create as agent-originated (CLI) for creation attribution.
 		req := map[string]any{"template": *tmpl, "vcpu": *vcpu, "memory_mb": *mem, "timeout": *timeout, "client": "cli"}
@@ -187,6 +200,9 @@ func cmdSandbox(c *cmdCtx, args []string) int {
 		}
 		if len(env) > 0 {
 			req["env"] = []string(env)
+		}
+		if len(mounts) > 0 {
+			req["volumes"] = mounts
 		}
 		if *public {
 			req["public"] = true // opt-in: preview URL reachable without a token

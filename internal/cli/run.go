@@ -165,6 +165,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	rest := ctx.takeGlobals(args)
 	if len(rest) == 0 {
+		if ctx.interactive() {
+			return cmdShell(ctx, nil)
+		}
 		usage(stderr)
 		return ExitUsage
 	}

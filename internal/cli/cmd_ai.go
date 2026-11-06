@@ -40,7 +40,7 @@ func aiCatalog() string {
 	var b strings.Builder
 	b.WriteString(strings.ReplaceAll(aiHeader, "{{version}}", Version))
 	b.WriteString("\n## Commands\n\n")
-	b.WriteString(commandHelp())
+	b.WriteString(commandHelp(true))
 	b.WriteString(strings.ReplaceAll(aiBody, "{{tools}}", fmt.Sprint(mcp.ToolCount())))
 	return b.String()
 }
@@ -66,17 +66,22 @@ const aiHeader = `# pilldrops — AI agent catalog (v{{version}})
 - Credentials resolve in order: ` + "`--api-url`" + ` flag >
   PILLDROPS_API_KEY/PILLDROPS_API_URL env > the SANDFORGE_ equivalents >
   /run/pilldrops/{token,env} (present only inside a sandbox, which is then its
-  own principal) > ~/.sandforge/config.json (written by login).
+  own principal) > ~/.sandforge/config.json (written by login; SANDFORGE_CONFIG
+  moves it).
   API URL defaults to http://localhost:8080 when unset.
 - A missing required argument is always exit 2 with a usage line, never a
   question: the CLI asks for one only when stdin is a terminal AND ` + "`--json`" + `
   was not given, so nothing you run can block waiting for an answer.
 - Non-interactive auth: ` + "`pilldrops login --key <key>`" + `, or set
-  PILLDROPS_API_KEY. Mint a key with ` + "`pilldrops keys create <name>`" + ` —
+  PILLDROPS_API_KEY; without either, ` + "`pilldrops login`" + ` exits 2 (it asks only
+  on a terminal). Mint a key with ` + "`pilldrops keys create <name>`" + ` —
   the secret is printed once and never again.
 - Ask before you assume: ` + "`pilldrops capabilities`" + ` says what this
   deployment supports and ` + "`pilldrops limits`" + ` what this plan allows, so a
   501 or a 402 can be predicted rather than discovered.
+- ` + "`pilldrops api <METHOD> /v1/...`" + ` reaches any route without a typed verb.
+  /v1/members and /v1/orgs refuse API keys on purpose: they need a dashboard
+  sign-in, so nothing here can reach them.
 - Self-checks: ` + "`pilldrops doctor --json`" + ` diagnoses auth/connectivity;
   ` + "`pilldrops upgrade`" + ` replaces this binary with the latest release.
 `
@@ -151,7 +156,7 @@ const aiBody = `
 
 ## MCP (use sandboxes as native agent tools)
 
-    # stdio, using the stored login (auto-opens browser sign-in when logged out):
+    # stdio, using the stored login (run pilldrops login first; logged out, tools fail):
     claude mcp add pilldrops -- pilldrops mcp
     # remote, served by the control plane at /mcp, with an API key:
     claude mcp add --transport http pilldrops <server>/mcp --header "Authorization: Bearer <api-key>"
@@ -161,6 +166,8 @@ const aiBody = `
 
 ## Notes for agents
 
+- Do not use pilldrops shell, or bare pilldrops on a terminal: that prompt is for
+  people, needs a terminal, and has no JSON contract. Run each command directly.
 - Quote through the shell boundary: pilldrops exec sb_x -- bash -c 'complex | pipeline'.
 - exec runs one command and buffers its output, so nothing that reads a terminal
   works in it: editors, pagers, REPLs, interactive installers. connect (alias ssh)

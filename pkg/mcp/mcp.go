@@ -731,7 +731,7 @@ func toolList() []tool {
 			schema: obj(map[string]any{}),
 			run:    simpleGet("/v1/usage"),
 		},
-	}, platformTools()...)
+	}, append(platformTools(), customerTools()...)...)
 }
 
 func toolDefs() []map[string]any {
