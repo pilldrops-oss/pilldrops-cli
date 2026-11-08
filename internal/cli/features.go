@@ -7,6 +7,10 @@ import (
 	"time"
 )
 
+// controlPlaneFeature is what a server with a control plane reports; a single
+// node answers neither these routes nor any other optional group.
+const controlPlaneFeature = "control-plane"
+
 // supports says whether this server serves an optional feature group. Not
 // knowing counts as yes, whether logged out, unreachable or a server too old to
 // report: the command then runs and reports its own error, as it always did.
@@ -38,13 +42,17 @@ func (c *cmdCtx) requireFeature(feature string) error {
 	if c.supports(feature) {
 		return nil
 	}
+	hint := "it is available on PillDrops Cloud; `pilldrops capabilities` lists what this server supports"
+	if feature == controlPlaneFeature {
+		hint = "this server is a single node; these commands need a control plane, see docs/deployment.md"
+	}
 	return pathError{
 		err: &APIError{
 			Status: http.StatusNotImplemented,
 			Code:   "feature_unavailable",
 			Msg:    fmt.Sprintf("this server does not support %s", feature),
 		},
-		hint: "it is available on PillDrops Cloud; `pilldrops capabilities` lists what this server supports",
+		hint: hint,
 	}
 }
 

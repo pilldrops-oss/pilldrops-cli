@@ -131,10 +131,19 @@ func cmdSandbox(c *cmdCtx, args []string) int {
 
 	switch sub {
 	case "expose":
+		if err := c.requireFeature(controlPlaneFeature); err != nil {
+			return c.fail(err)
+		}
 		return sandboxExpose(c, cl, subArgs)
 	case "forwards":
+		if err := c.requireFeature(controlPlaneFeature); err != nil {
+			return c.fail(err)
+		}
 		return sandboxForwards(c, cl, subArgs)
 	case "unexpose":
+		if err := c.requireFeature(controlPlaneFeature); err != nil {
+			return c.fail(err)
+		}
 		return sandboxUnexpose(c, cl, subArgs)
 	case "integrations":
 		if err := c.requireFeature("integrations"); err != nil {
@@ -166,6 +175,11 @@ func cmdSandbox(c *cmdCtx, args []string) int {
 		fs.Var(&volumes, "volume", "attach a volume as <id>:<path>, repeatable (`pilldrops volume create`)")
 		if err := fs.Parse(subArgs); err != nil {
 			return ExitUsage
+		}
+		if *snapshot != "" {
+			if err := c.requireFeature(controlPlaneFeature); err != nil {
+				return c.fail(err)
+			}
 		}
 		// A server without volumes ignores the field, and the sandbox would boot without its disk.
 		if len(volumes) > 0 {

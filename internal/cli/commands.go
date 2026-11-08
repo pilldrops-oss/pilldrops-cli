@@ -203,6 +203,7 @@ sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
                        env scope NAME all|shared|private; env rm NAME
                        (the ORG vault — not a sandbox's own environment)`,
 			example: `pilldrops --json env list`,
+			feature: controlPlaneFeature,
 		},
 		{
 			name: "domain", aliases: []string{"domains"}, run: cmdDomain, subs: []string{"add", "list", "rm"},
@@ -210,6 +211,7 @@ sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
                        in front of a public sandbox (prints the DNS record and
                        waits for it); domain list; domain rm <host>`,
 			example: `pilldrops --json domain list`,
+			feature: controlPlaneFeature,
 		},
 		{
 			name: "snapshot", aliases: []string{"snapshots"}, run: cmdSnapshot, subs: []string{"save", "list", "get", "rm"},
@@ -217,6 +219,7 @@ sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
                        sandbox and 'sandbox create --from-snapshot <name>' boots
                        it; snapshot list; snapshot get <name>; snapshot rm <name> --confirm`,
 			example: `pilldrops --json snapshot list`,
+			feature: controlPlaneFeature,
 		},
 		{
 			name: "checkpoint", aliases: []string{"checkpoints"}, run: cmdCheckpoint, subs: []string{"save", "list", "rm", "restore"},
@@ -311,7 +314,7 @@ agent webhook add <id> <url> --event E ...; agent webhook rm <id> <hookID> --con
 		group("project", projectVerbs(), `project list | create <name> [--plan TEXT] | get <id> | rm <id> --confirm (archives)
                        | runs <id> | run <id> [--service service:sandbox ...]
                        (run records a run against the plan; it starts nothing)`,
-			`pilldrops --json project list`),
+			`pilldrops --json project list`).needs(controlPlaneFeature),
 		group("thread", threadVerbs(), `thread list | create [--title T] | get <id> | rm <id> --confirm
                        stored transcripts, as the dashboard keeps them; a thread
                        runs nothing. agent ask gives work to an agent`,

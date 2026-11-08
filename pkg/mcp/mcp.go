@@ -771,12 +771,13 @@ func callTool(name string, args map[string]any, be Backend) map[string]any {
 // optionalToolFeatures ties tools to the feature group that serves them; a tool
 // matching none is core.
 var optionalToolFeatures = map[string][]string{
-	"agent":        {"agent_ask", "agent_decide_approval", "agent_get_turn", "agent_interrupt", "agent_list_approvals", "agent_list_turns", "agent_status"},
-	"cron":         {"create_cron_job", "delete_cron_job", "list_cron_jobs", "run_cron_job", "toggle_cron_job"},
-	"function":     {"create_function", "delete_function", "get_function", "get_function_logs", "list_functions"},
-	"integrations": {"list_integrations"},
-	"thread":       {"create_thread", "delete_thread", "get_thread", "list_threads"},
-	"volume":       {"create_volume", "delete_volume", "list_volumes"},
+	"control-plane": {"add_domain", "create_project", "delete_project", "delete_secret", "delete_snapshot", "get_project", "list_domains", "list_project_runs", "list_projects", "list_secrets", "list_snapshots", "put_secret", "remove_domain", "save_snapshot", "start_project_run"},
+	"agent":         {"agent_ask", "agent_decide_approval", "agent_get_turn", "agent_interrupt", "agent_list_approvals", "agent_list_turns", "agent_status"},
+	"cron":          {"create_cron_job", "delete_cron_job", "list_cron_jobs", "run_cron_job", "toggle_cron_job"},
+	"function":      {"create_function", "delete_function", "get_function", "get_function_logs", "list_functions"},
+	"integrations":  {"list_integrations"},
+	"thread":        {"create_thread", "delete_thread", "get_thread", "list_threads"},
+	"volume":        {"create_volume", "delete_volume", "list_volumes"},
 }
 
 func toolServed(name string, supported func(string) bool) bool {

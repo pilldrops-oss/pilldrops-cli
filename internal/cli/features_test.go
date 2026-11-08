@@ -94,7 +94,7 @@ func TestHelpAndCatalogFollowTheServer(t *testing.T) {
 			t.Errorf("help shows %q", hidden)
 		}
 	}
-	for _, shown := range []string{"sandbox create", "--volume", "volume create", "not on this server: team, agent, cron"} {
+	for _, shown := range []string{"sandbox create", "--volume", "volume create", "not on this server: control-plane, team, agent, cron"} {
 		if !strings.Contains(help.String(), shown) {
 			t.Errorf("help is missing %q", shown)
 		}
@@ -119,5 +119,26 @@ func TestHelpAndCatalogFollowTheServer(t *testing.T) {
 	}
 	if len(catalog.Unsupported) == 0 {
 		t.Error("catalog does not say what is missing")
+	}
+}
+
+func TestSingleNodeRefusesControlPlaneCommands(t *testing.T) {
+	other := featureServer(t, `{"features":[]}`)
+	for _, args := range [][]string{
+		{"env", "list"}, {"domain", "list"}, {"snapshot", "list"}, {"project", "list"},
+		{"sandbox", "expose", "sb_1", "8000"}, {"sandbox", "forwards", "sb_1"}, {"sandbox", "unexpose", "sb_1", "8000"},
+		{"sandbox", "create", "--from-snapshot", "golden"},
+	} {
+		var out, errOut bytes.Buffer
+		code := Run(append([]string{"--json"}, args...), &out, &errOut)
+		if code != ExitAPI {
+			t.Errorf("%v: exit %d, want %d: %s", args, code, ExitAPI, errOut.String())
+		}
+		if !strings.Contains(errOut.String(), "control plane") {
+			t.Errorf("%v: %s", args, errOut.String())
+		}
+	}
+	if *other != 0 {
+		t.Errorf("%d requests went past the refusal", *other)
 	}
 }
