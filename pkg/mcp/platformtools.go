@@ -455,7 +455,8 @@ func platformTools() []tool {
 			desc: "Point a customer hostname at a public sandbox (give sandbox_id, and port if the app is " +
 				"not on 8000), or claim a wildcard like *.example.com for the whole org. Nothing routes " +
 				"until DNS is in place: the reply carries the CNAME record that has to be created at the " +
-				"domain's registrar, which is a step only a human can do — hand the record over and check " +
+				"domain's registrar (or, where a CNAME is impossible, an A record plus the TXT record in " +
+				"txt_record), which is a step only a human can do — hand the record over and check " +
 				"back with list_domains. The sandbox must be publicly reachable, since a custom host carries " +
 				"no preview token.",
 			schema: obj(map[string]any{
@@ -477,7 +478,8 @@ func platformTools() []tool {
 		{
 			name: "list_domains",
 			desc: "The org's custom hostnames with their verification status and the CNAME record each one " +
-				"needs. A host stays pending until the platform sees that record in DNS, so this is where " +
+				"needs, or the TXT record (txt_record) that an address-only match requires. A host stays pending " +
+				"until the platform sees that record in DNS, so this is where " +
 				"you find out whether the DNS change actually landed.",
 			schema: obj(map[string]any{}),
 			run: func(a map[string]any, be Backend) map[string]any {
