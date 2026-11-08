@@ -277,7 +277,7 @@ func connectShell(c *cmdCtx, wsURL string) int {
 		}
 		sendResize() // envd starts every PTY at 80x24 until told otherwise
 		winch := make(chan os.Signal, 1)
-		signal.Notify(winch, syscall.SIGWINCH)
+		notifyResize(winch)
 		defer signal.Stop(winch)
 		go func() {
 			for range winch {
