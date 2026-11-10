@@ -19,6 +19,7 @@ import (
 const validConfig = `
 version = "sandboxd/v1.2.0"
 domain  = "sandbox.example.com"
+admin_email = "ops@example.com"
 [ssh]
 user = "ubuntu"
 [tls]
@@ -71,6 +72,9 @@ func TestLoadConfigRefuses(t *testing.T) {
 		"name needs ip":   {"private_ip = \"10.0.0.10\"\n", "", "private_ip must be an IP"},
 		"shared ip":       {`host    = "10.0.0.22"`, `host    = "10.0.0.21"`, "used twice"},
 		"bad runtime":     {`"docker"`, `"kvm"`, "runtime must be"},
+		"ipv6 private":    {`private_ip = "10.0.0.10"`, `private_ip = "fd00::10"`, "IPv4"},
+		"ssh option host": {`host    = "10.0.0.22"`, `host    = "-oProxyCommand=id"`, "does not start with -"},
+		"bad admin email": {`"ops@example.com"`, `"ops'@example.com"`, "admin_email"},
 		"no nodes":        {"[[node]]", "[[nodex]]", ""},
 	}
 	for name, tc := range cases {
@@ -123,12 +127,21 @@ func TestSecretsAreMadeOnceAndKept(t *testing.T) {
 	}
 
 	// A secret added in a later release is generated without touching the rest.
-	if err := os.WriteFile(p, []byte("NODE_KEY_SECRET=keepme\n"), 0o600); err != nil {
+	keep := strings.Repeat("ab", 32)
+	if err := os.WriteFile(p, []byte("NODE_KEY_SECRET="+keep+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	grown, created, err := LoadSecrets(p)
-	if err != nil || !created || grown["NODE_KEY_SECRET"] != "keepme" || grown["VAULT_SECRET_KEY"] == "" {
+	if err != nil || !created || grown["NODE_KEY_SECRET"] != keep || grown["VAULT_SECRET_KEY"] == "" {
 		t.Fatalf("created=%v err=%v NODE_KEY_SECRET=%q", created, err, grown["NODE_KEY_SECRET"])
+	}
+
+	// A hand-edited value would reach shell, SQL and env files unquoted.
+	if err := os.WriteFile(p, []byte("NODE_KEY_SECRET=it's\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadSecrets(p); err == nil || !strings.Contains(err.Error(), "64 hex") {
+		t.Fatalf("err = %v, want a malformed secret refused", err)
 	}
 
 	if err := os.Chmod(p, 0o644); err != nil {
@@ -189,6 +202,10 @@ func TestScriptsRender(t *testing.T) {
 		"hostssl pilldrops pilldrops_node 10.0.0.22/32",
 		"iptables -A PILLDROPS-IN -s 10.0.0.21 -p tcp --dport 5432 -j RETURN",
 		"sandbox.example.com, *.sandbox.example.com {",
+		"$ipt -A PILLDROPS-IN -p tcp --dport 9090 -j DROP",
+		"for ipt in iptables ip6tables",
+		"http://127.0.0.1:9090/dashboard/setup",
+		"printf '%s' '" + a.sec["ADMIN_PASSWORD"] + "' > \"$stage/password\"",
 	} {
 		if !strings.Contains(control, want) {
 			t.Errorf("control script lacks %q", want)
@@ -196,6 +213,12 @@ func TestScriptsRender(t *testing.T) {
 	}
 	if strings.Contains(control, "certbot") {
 		t.Error("files mode should not run certbot")
+	}
+	// The console is claimed, and the ports closed, before anything is public.
+	fw, orch, claim, caddy := strings.Index(control, `say "firewall"`), strings.Index(control, "systemctl restart pilldrops-orchestrator"),
+		strings.Index(control, "/dashboard/setup"), strings.Index(control, "systemctl restart caddy")
+	if !(fw < orch && orch < claim && claim < caddy) {
+		t.Errorf("order: firewall %d, orchestrator %d, claim %d, caddy %d", fw, orch, claim, caddy)
 	}
 
 	a.cfg.TLS = TLS{Mode: "cloudflare", Email: "a@example.com", TokenEnv: "PD_TEST_CF"}
@@ -224,6 +247,23 @@ func TestScriptsRender(t *testing.T) {
 			t.Errorf("%s node script: provision-node.sh present = %v", runtime, got)
 		}
 	}
+
+	// A node that already joined gets the firewall and domain steps only.
+	rejoin, err := a.nodeScript(a.cfg.Nodes[0], "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bashCheck(t, rejoin)
+	for _, absent := range []string{"join.sh", "provision-node.sh", "apt-get"} {
+		if strings.Contains(rejoin, absent) {
+			t.Errorf("a joined node's script runs %s", absent)
+		}
+	}
+	for _, want := range []string{"ip6tables -A PILLDROPS-NODE -p tcp --dport 18080 -j DROP", "SANDBOXD_SANDBOX_DOMAIN=sandbox.example.com"} {
+		if !strings.Contains(rejoin, want) {
+			t.Errorf("a joined node's script lacks %q", want)
+		}
+	}
 }
 
 func TestShellQuoteRoundTrips(t *testing.T) {
@@ -239,6 +279,7 @@ func TestCheckHostsResolvesRuntime(t *testing.T) {
 	a := testApplier(t)
 	a.ssh = func(_ context.Context, target, _ string, out io.Writer) error {
 		if target == "ubuntu@10.0.0.21" {
+			fmt.Fprintln(out, "sudo: unable to resolve host node-a: Name or service not known")
 			fmt.Fprintln(out, "kvm")
 		} else {
 			fmt.Fprintln(out, "none")

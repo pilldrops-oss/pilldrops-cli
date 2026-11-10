@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -67,7 +68,7 @@ func fetchSums(tag string) ([]byte, error) {
 		// Signed by the release workflow: pin the identity, or any Sigstore
 		// identity would pass.
 		args = []string{"verify-blob", "--certificate", write("SHA256SUMS.pem", pem), "--signature", sigPath,
-			"--certificate-identity-regexp", `^https://github.com/` + releaseRepo + `/\.github/workflows/release\.yml@refs/tags/sandboxd/`,
+			"--certificate-identity-regexp", `^https://github.com/` + releaseRepo + `/\.github/workflows/release\.yml@refs/tags/` + regexp.QuoteMeta(tag) + `$`,
 			"--certificate-oidc-issuer", "https://token.actions.githubusercontent.com", sumsPath}
 	} else {
 		args = []string{"verify-blob", "--insecure-ignore-tlog=true", "--key", write("release.pub", releasePub),

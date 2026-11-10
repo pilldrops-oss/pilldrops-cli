@@ -83,7 +83,14 @@ func Apply(ctx context.Context, path string, out io.Writer) error {
 	}
 	for _, n := range cfg.Nodes {
 		if _, ok := registered[advertiseURL(n)]; ok {
-			fmt.Fprintf(out, "── node %s already joined\n", n.Host.Host)
+			fmt.Fprintf(out, "── node %s already joined; checking its firewall and domain\n", n.Host.Host)
+			script, err := a.nodeScript(n, "")
+			if err == nil {
+				err = a.ssh(ctx, a.cfg.Target(n.Host), script, out)
+			}
+			if err != nil {
+				return fmt.Errorf("node %s: %w", n.Host.Host, err)
+			}
 			continue
 		}
 		fmt.Fprintf(out, "── node %s (%s)\n", n.Host.Host, n.Runtime)
@@ -99,9 +106,10 @@ func Apply(ctx context.Context, path string, out io.Writer) error {
 	fmt.Fprintf(out, `
 ✓ The fleet is running: %d node(s).
 
-  Dashboard   https://%s/   (the first visit creates the admin account; open it now)
-  Operator    ORCHESTRATOR_API_KEY in %s
-`, len(cfg.Nodes), cfg.Domain, secretsPath)
+  Dashboard   https://%s/   sign in as %s with ADMIN_PASSWORD
+  Operator    ORCHESTRATOR_API_KEY, for the API and CLI
+  Both are in %s
+`, len(cfg.Nodes), cfg.Domain, cfg.AdminEmail, secretsPath)
 	return nil
 }
 
@@ -135,7 +143,10 @@ func (a *applier) checkHosts(ctx context.Context) error {
 		if err := a.ssh(ctx, a.cfg.Target(n.Host), "grep -q 'ID=ubuntu' /etc/os-release && { [ -e /dev/kvm ] && echo kvm || echo none; }", &kvm); err != nil {
 			return fmt.Errorf("node %s: ssh with sudo to an Ubuntu host failed: %w", n.Host.Host, err)
 		}
-		hasKVM := strings.TrimSpace(kvm.String()) == "kvm"
+		// Only the last word: sudo may warn on stderr first, such as about an
+		// unresolvable hostname, and both streams arrive in one buffer.
+		words := strings.Fields(kvm.String())
+		hasKVM := len(words) > 0 && words[len(words)-1] == "kvm"
 		switch {
 		case n.Runtime == "firecracker" && !hasKVM:
 			return fmt.Errorf("node %s: runtime firecracker needs /dev/kvm, which this host does not have", n.Host.Host)
@@ -165,6 +176,7 @@ func (a *applier) controlScript() (string, error) {
 	d["Control"] = a.cfg.Control
 	d["Nodes"] = a.cfg.Nodes
 	d["TLS"] = a.cfg.TLS
+	d["AdminEmail"] = a.cfg.AdminEmail
 	if a.cfg.TLS.Mode == "cloudflare" {
 		d["CloudflareToken"] = os.Getenv(a.cfg.TLS.TokenEnv)
 	} else {

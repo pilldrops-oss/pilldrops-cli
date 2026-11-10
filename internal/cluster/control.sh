@@ -36,6 +36,24 @@ install -m 0644 "$stage/envd-linux-amd64" /opt/pilldrops/node-bin/envd
 install -m 0644 "$stage/pilldrops-join-linux-amd64" /opt/pilldrops/node-bin/pilldrops-join-linux
 (cd /opt/pilldrops/node-bin && sha256sum sandboxd-linux envd pilldrops-join-linux > SHA256SUMS)
 
+say "firewall"
+# Before the orchestrator starts: it and Postgres listen on every address,
+# IPv6 included, and only loopback and the nodes (over IPv4) may reach them.
+for ipt in iptables ip6tables; do
+  $ipt -N PILLDROPS-IN 2>/dev/null || true
+  $ipt -F PILLDROPS-IN
+  $ipt -A PILLDROPS-IN -i lo -j RETURN
+done
+{{- range .Nodes}}
+iptables -A PILLDROPS-IN -s {{.PrivateIP}} -p tcp --dport 5432 -j RETURN
+{{- end}}
+for ipt in iptables ip6tables; do
+  $ipt -A PILLDROPS-IN -p tcp --dport 9090 -j DROP
+  $ipt -A PILLDROPS-IN -p tcp --dport 5432 -j DROP
+  $ipt -C INPUT -j PILLDROPS-IN 2>/dev/null || $ipt -I INPUT -j PILLDROPS-IN
+done
+netfilter-persistent save >/dev/null 2>&1
+
 say "postgres"
 pgconf=$(ls -d /etc/postgresql/*/main | tail -1)
 echo "listen_addresses = 'localhost,{{.Control.PrivateIP}}'" > "$pgconf/conf.d/pilldrops.conf"
@@ -107,17 +125,20 @@ done
 { echo "\\set node_password '{{.Secrets.NODE_DB_PASSWORD}}'"; cat /opt/pilldrops/src/scripts/postgres-node-role.sql; } |
   sudo -u postgres PGOPTIONS='-c client_min_messages=warning' psql -q -d pilldrops >/dev/null
 
-say "firewall"
-iptables -N PILLDROPS-IN 2>/dev/null || true
-iptables -F PILLDROPS-IN
-iptables -A PILLDROPS-IN -i lo -j RETURN
-{{- range .Nodes}}
-iptables -A PILLDROPS-IN -s {{.PrivateIP}} -p tcp --dport 5432 -j RETURN
-{{- end}}
-iptables -A PILLDROPS-IN -p tcp --dport 9090 -j DROP
-iptables -A PILLDROPS-IN -p tcp --dport 5432 -j DROP
-iptables -C INPUT -j PILLDROPS-IN 2>/dev/null || iptables -I INPUT -j PILLDROPS-IN
-netfilter-persistent save >/dev/null 2>&1
+# Claim the console over loopback before Caddy publishes the domain: an
+# unclaimed one lets its first visitor create the administrator.
+umask 077
+printf '%s' {{sq .AdminEmail}} > "$stage/email"
+printf '%s' '{{.Secrets.ADMIN_PASSWORD}}' > "$stage/password"
+umask 022
+code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9090/dashboard/setup \
+  --data-urlencode "email@$stage/email" --data-urlencode "password@$stage/password" \
+  --data-urlencode "confirm@$stage/password")
+case "$code" in
+  2??|3??) say "console claimed for "{{sq .AdminEmail}} ;;
+  409) ;; # claimed on an earlier run
+  *) echo "claiming the console failed with HTTP $code" >&2; exit 1 ;;
+esac
 
 say "certificate"
 install -d -m 0750 -o root -g caddy /etc/caddy/certs

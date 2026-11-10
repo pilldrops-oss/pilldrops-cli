@@ -20,13 +20,18 @@ var hostname = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$
 // releaseTag is an engine release tag; it too goes into the host scripts.
 var releaseTag = regexp.MustCompile(`^sandboxd/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$`)
 
+// email is loose on purpose: the console checks the address itself, and this
+// only has to keep quotes and shell characters out.
+var email = regexp.MustCompile(`^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$`)
+
 // Config is cluster.toml. It holds only what the operator chooses; secrets
 // live in cluster.secrets beside it, so this file can be committed.
 type Config struct {
-	Version string `toml:"version"`
-	Domain  string `toml:"domain"`
-	Zone    string `toml:"zone"`
-	SSH     struct {
+	Version    string `toml:"version"`
+	Domain     string `toml:"domain"`
+	Zone       string `toml:"zone"`
+	AdminEmail string `toml:"admin_email"`
+	SSH        struct {
 		User string `toml:"user"`
 	} `toml:"ssh"`
 	TLS     TLS    `toml:"tls"`
@@ -95,6 +100,9 @@ func (c *Config) check() error {
 	if !hostname.MatchString(c.Domain) {
 		return fmt.Errorf("domain must be a bare hostname such as sandbox.example.com, not %q", c.Domain)
 	}
+	if !email.MatchString(c.AdminEmail) {
+		return fmt.Errorf("admin_email must be the address the console's administrator signs in with, not %q", c.AdminEmail)
+	}
 	if c.Zone == "" {
 		c.Zone = "default"
 	}
@@ -141,14 +149,14 @@ func (c *Config) check() error {
 }
 
 func fillPrivateIP(h *Host, what string) error {
-	if h.Host == "" {
-		return fmt.Errorf("%s needs host", what)
+	if h.Host == "" || h.Host[0] == '-' {
+		return fmt.Errorf("%s needs host, an ssh destination that does not start with -", what)
 	}
 	if h.PrivateIP == "" {
 		h.PrivateIP = h.Host
 	}
-	if net.ParseIP(h.PrivateIP) == nil {
-		return fmt.Errorf("%s: private_ip must be an IP address, not %q (set it when host is a name)", what, h.PrivateIP)
+	if ip := net.ParseIP(h.PrivateIP); ip == nil || ip.To4() == nil {
+		return fmt.Errorf("%s: private_ip must be an IPv4 address, not %q (set it when host is a name)", what, h.PrivateIP)
 	}
 	return nil
 }

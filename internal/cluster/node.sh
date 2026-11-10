@@ -1,19 +1,23 @@
 set -euo pipefail
 # One node: set the host up for its runtime, allow the node port only from the
 # control host, join the fleet with a one-time token, and give it the preview
-# domain. Rendered by apply.go and run as root over ssh.
+# domain. A node that has already joined gets no token and only the firewall
+# and domain steps, which also finish a join that stopped part way.
+# Rendered by apply.go and run as root over ssh.
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1
 # ssh forwards the operator's locale, which a fresh host may not have.
 export LC_ALL=C.UTF-8
 say() { printf '   %s\n' "$*"; }
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
+
+{{- if .Token}}
 
 say "packages"
 apt-get update -qq
 apt-get install -y -qq curl ca-certificates tar iptables >/dev/null
 
 say "release {{.Tag}}"
-stage=$(mktemp -d)
-trap 'rm -rf "$stage"' EXIT
 base64 -d > "$stage/SHA256SUMS" <<'SUMS'
 {{.SumsB64}}
 SUMS
@@ -43,16 +47,28 @@ install -D -m 0755 "$stage/pilldrops-linux-amd64" /opt/pilldrops/bin/pilldrops-l
 systemctl daemon-reload
 systemctl enable sandbox-egress-restore.service >/dev/null 2>&1
 {{- end}}
+{{- end}}
 
 say "firewall"
+# The node listens on every address, IPv6 included; only the control host,
+# over IPv4, may reach it.
 iptables -N PILLDROPS-NODE 2>/dev/null || true
 iptables -F PILLDROPS-NODE
 iptables -A PILLDROPS-NODE -i lo -j RETURN
 iptables -A PILLDROPS-NODE -s {{.ControlIP}} -p tcp --dport 18080 -j RETURN
 iptables -A PILLDROPS-NODE -p tcp --dport 18080 -j DROP
 iptables -C INPUT -j PILLDROPS-NODE 2>/dev/null || iptables -I INPUT -j PILLDROPS-NODE
-# sandbox-egress-restore.service restores this file at boot, egress rules included.
-mkdir -p /etc/iptables && iptables-save > /etc/iptables/rules.v4
+ip6tables -N PILLDROPS-NODE 2>/dev/null || true
+ip6tables -F PILLDROPS-NODE
+ip6tables -A PILLDROPS-NODE -i lo -j RETURN
+ip6tables -A PILLDROPS-NODE -p tcp --dport 18080 -j DROP
+ip6tables -C INPUT -j PILLDROPS-NODE 2>/dev/null || ip6tables -I INPUT -j PILLDROPS-NODE
+# sandbox-egress-restore.service restores both files at boot, egress rules included.
+mkdir -p /etc/iptables
+iptables-save > /etc/iptables/rules.v4
+ip6tables-save > /etc/iptables/rules.v6
+
+{{- if .Token}}
 
 say "join"
 umask 077
@@ -61,9 +77,12 @@ umask 022
 curl -fsSL {{sq .OrchestratorURL}}/install.sh -o "$stage/join.sh"
 JOIN_TOKEN_FILE="$stage/token" ORCHESTRATOR_URL={{sq .OrchestratorURL}} NODE_ZONE={{sq .Zone}} \
   ADVERTISE_URL={{sq .AdvertiseURL}} sh "$stage/join.sh" >/dev/null
+{{- end}}
 
 # The join writes the node's identity; previews also need the domain, which
 # it does not carry.
-sed -i '/^SANDBOXD_SANDBOX_DOMAIN=/d' /etc/sandboxd.env
-echo 'SANDBOXD_SANDBOX_DOMAIN={{.Domain}}' >> /etc/sandboxd.env
-systemctl restart sandboxd
+if ! grep -qx 'SANDBOXD_SANDBOX_DOMAIN={{.Domain}}' /etc/sandboxd.env; then
+  sed -i '/^SANDBOXD_SANDBOX_DOMAIN=/d' /etc/sandboxd.env
+  echo 'SANDBOXD_SANDBOX_DOMAIN={{.Domain}}' >> /etc/sandboxd.env
+  systemctl restart sandboxd
+fi

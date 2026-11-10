@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -22,7 +23,10 @@ var secretNames = []string{
 	"SANDBOXD_SECRET_KEY", // also handed to nodes as NODE_BOOTSTRAP_SECRET
 	"POSTGRES_PASSWORD",
 	"NODE_DB_PASSWORD",
+	"ADMIN_PASSWORD", // the console's administrator, with admin_email
 }
+
+var secretValue = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // Secrets is cluster.secrets: KEY=VALUE lines, mode 0600.
 type Secrets map[string]string
@@ -57,7 +61,10 @@ func LoadSecrets(path string) (Secrets, bool, error) {
 	}
 	added := false
 	for _, name := range secretNames {
-		if s[name] != "" {
+		if v := s[name]; v != "" {
+			if !secretValue.MatchString(v) {
+				return nil, false, fmt.Errorf("%s: %s must be 64 hex characters, as apply generated it", path, name)
+			}
 			continue
 		}
 		b := make([]byte, 32)

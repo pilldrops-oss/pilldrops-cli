@@ -11,6 +11,7 @@
 version = "sandboxd/v1.2.0"     # a release tag
 domain  = "sandbox.example.com" # point <domain> and *.<domain> at the control host
 zone    = "default"
+admin_email = "you@example.com" # signs in to the console with ADMIN_PASSWORD from cluster.secrets
 
 [ssh]
 user = "ubuntu"
