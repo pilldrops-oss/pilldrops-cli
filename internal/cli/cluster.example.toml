@@ -1,0 +1,41 @@
+# A PillDrops fleet: one control host and the nodes that run sandboxes.
+# `pilldrops cluster apply` sets it up over ssh, and running it again brings the
+# fleet back in line with this file. Secrets are generated into
+# cluster.secrets next to this file; back that up and never commit it.
+#
+# Hosts: Ubuntu 24.04, x86_64, reachable with `ssh <user>@<host> sudo …`
+# without a password prompt, on one private network. A node with /dev/kvm
+# runs microVMs; without it, Docker containers.
+# Needs on this machine: ssh and cosign (it checks the release signature).
+
+version = "sandboxd/v1.2.0"     # a release tag
+domain  = "sandbox.example.com" # point <domain> and *.<domain> at the control host
+zone    = "default"
+admin_email = "you@example.com" # signs in to the console with ADMIN_PASSWORD from cluster.secrets
+
+[ssh]
+user = "ubuntu"
+
+[tls]
+# cloudflare: a wildcard certificate from Let's Encrypt over DNS-01. The token
+# needs Zone:DNS:Edit on the zone and is read from the variable named here.
+mode      = "cloudflare"
+email     = "you@example.com"
+token_env = "CF_API_TOKEN"
+# Or a certificate for <domain> and *.<domain> you already have:
+# mode      = "files"
+# cert_file = "fullchain.pem"
+# key_file  = "privkey.pem"
+
+[control]
+host       = "203.0.113.10" # how ssh reaches it
+private_ip = "10.0.0.10"    # how nodes reach it
+
+[[node]]
+host       = "203.0.113.21"
+private_ip = "10.0.0.21"
+runtime    = "auto"         # firecracker with /dev/kvm, docker otherwise
+
+[[node]]
+host       = "203.0.113.22"
+private_ip = "10.0.0.22"

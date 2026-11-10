@@ -340,6 +340,13 @@ agent webhook add <id> <url> --event E ...; agent webhook rm <id> <hookID> --con
 			example: `pilldrops --json api GET /v1/whoami`,
 		},
 		{
+			name: "cluster", run: cmdCluster, subs: []string{"apply", "example"}, humanOnly: true,
+			help: `cluster apply [-f cluster.toml]   install or update a self-hosted fleet over ssh:
+                       control host, Postgres, HTTPS and nodes. cluster example
+                       prints a cluster.toml to start from`,
+			example: `pilldrops cluster example`,
+		},
+		{
 			name: "doctor", run: cmdDoctor,
 			help:    `doctor                 check version, credentials, connectivity, auth`,
 			example: `pilldrops --json doctor`,
