@@ -61,6 +61,8 @@ type Host struct {
 type Node struct {
 	Host
 	Runtime string `toml:"runtime"`
+
+	joined bool // the host is already a node of this fleet; set by checkHosts
 }
 
 // Target is the ssh destination for h.

@@ -77,12 +77,8 @@ func Apply(ctx context.Context, path string, out io.Writer) error {
 		return err
 	}
 
-	registered, err := a.nodes(ctx)
-	if err != nil {
-		return err
-	}
 	for _, n := range cfg.Nodes {
-		if _, ok := registered[advertiseURL(n)]; ok {
+		if n.joined {
 			fmt.Fprintf(out, "── node %s already joined; checking its firewall and domain\n", n.Host.Host)
 			script, err := a.nodeScript(n, "")
 			if err == nil {
@@ -139,14 +135,23 @@ func (a *applier) checkHosts(ctx context.Context) error {
 	}
 	for i := range a.cfg.Nodes {
 		n := &a.cfg.Nodes[i]
-		var kvm bytes.Buffer
-		if err := a.ssh(ctx, a.cfg.Target(n.Host), "grep -q 'ID=ubuntu' /etc/os-release && { [ -e /dev/kvm ] && echo kvm || echo none; }", &kvm); err != nil {
+		// Joined is read from the host, not the control plane: a control plane
+		// without Redis forgets its nodes on a restart until they heartbeat.
+		probe := "grep -q 'ID=ubuntu' /etc/os-release && echo \"pilldrops-probe" +
+			" kvm=$([ -e /dev/kvm ] && echo y || echo n)" +
+			" joined=$(grep -qx 'ORCHESTRATOR_URL=https://" + a.cfg.Domain + "' /etc/sandboxd.env 2>/dev/null && echo y || echo n)\""
+		var buf bytes.Buffer
+		if err := a.ssh(ctx, a.cfg.Target(n.Host), probe, &buf); err != nil {
 			return fmt.Errorf("node %s: ssh with sudo to an Ubuntu host failed: %w", n.Host.Host, err)
 		}
-		// Only the last word: sudo may warn on stderr first, such as about an
-		// unresolvable hostname, and both streams arrive in one buffer.
-		words := strings.Fields(kvm.String())
-		hasKVM := len(words) > 0 && words[len(words)-1] == "kvm"
+		// sudo may warn on stderr first, such as about an unresolvable
+		// hostname, and both streams arrive in one buffer.
+		var hasKVM bool
+		for _, line := range strings.Split(buf.String(), "\n") {
+			if f := strings.Fields(line); len(f) == 3 && f[0] == "pilldrops-probe" {
+				hasKVM, n.joined = f[1] == "kvm=y", f[2] == "joined=y"
+			}
+		}
 		switch {
 		case n.Runtime == "firecracker" && !hasKVM:
 			return fmt.Errorf("node %s: runtime firecracker needs /dev/kvm, which this host does not have", n.Host.Host)
@@ -167,7 +172,6 @@ func (a *applier) base() map[string]any {
 		"Secrets":     a.sec,
 		"SumsB64":     base64.StdEncoding.EncodeToString(a.sums),
 		"ReleaseBase": releaseBase + a.cfg.Version + "/",
-		"SourceURL":   "https://github.com/" + releaseRepo + "/archive/refs/tags/" + a.cfg.Version + ".tar.gz",
 	}
 }
 

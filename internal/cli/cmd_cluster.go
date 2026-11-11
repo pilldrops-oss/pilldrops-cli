@@ -42,8 +42,10 @@ func cmdCluster(c *cmdCtx, args []string) int {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
+		// Not c.fail: its hints are about the API, and these errors are about hosts.
 		if err := cluster.Apply(ctx, *file, c.stderr); err != nil {
-			return c.fail(err)
+			fmt.Fprintln(c.stderr, "pilldrops:", err)
+			return ExitAPI
 		}
 		return ExitOK
 	default:

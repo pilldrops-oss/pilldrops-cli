@@ -7,6 +7,7 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1
 # ssh forwards the operator's locale, which a fresh host may not have.
 export LC_ALL=C.UTF-8
+# Package installs wait on the dpkg lock: a fresh host is often still running unattended-upgrades.
 say() { printf '   %s\n' "$*"; }
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
@@ -14,18 +15,17 @@ trap 'rm -rf "$stage"' EXIT
 {{- if .Token}}
 
 say "packages"
-apt-get update -qq
-apt-get install -y -qq curl ca-certificates tar iptables >/dev/null
+apt-get -o DPkg::Lock::Timeout=300 update -qq
+apt-get -o DPkg::Lock::Timeout=300 install -y -qq curl ca-certificates tar iptables >/dev/null
 
 say "release {{.Tag}}"
 base64 -d > "$stage/SHA256SUMS" <<'SUMS'
 {{.SumsB64}}
 SUMS
-files="envd-linux-amd64 pilldrops-linux-amd64"
+files="envd-linux-amd64 pilldrops-linux-amd64 source.tar.gz"
 for f in $files; do curl -fsSL {{sq .ReleaseBase}}"$f" -o "$stage/$f"; done
 (cd "$stage" && grep -E " \*?($(echo "$files" | tr ' ' '|'))\$" SHA256SUMS | sha256sum -c --quiet -)
 src=/opt/pilldrops/src
-curl -fsSL {{sq .SourceURL}} -o "$stage/source.tar.gz"
 rm -rf "$src" && mkdir -p "$src/bin"
 tar -xzf "$stage/source.tar.gz" -C "$src" --strip-components=1
 install -m 0755 "$stage/pilldrops-linux-amd64" "$src/bin/pilldrops-linux"
@@ -35,7 +35,7 @@ say "firecracker (kernel, networking, base template; the first run takes a while
 (cd "$src" && BUILD_DIR="$src" TEMPLATES=base bash scripts/provision-node.sh) >/dev/null
 {{- else}}
 say "docker"
-command -v docker >/dev/null 2>&1 || apt-get install -y -qq docker.io >/dev/null
+command -v docker >/dev/null 2>&1 || apt-get -o DPkg::Lock::Timeout=300 install -y -qq docker.io >/dev/null
 systemctl enable --now docker >/dev/null 2>&1
 bash "$src/scripts/setup-docker-egress.sh" >/dev/null
 for u in sandboxd.service sandbox-egress-restore.service; do
