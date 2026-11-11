@@ -153,7 +153,7 @@ func TestSecretsAreMadeOnceAndKept(t *testing.T) {
 }
 
 func TestMissingFiles(t *testing.T) {
-	sums := "aa  orchestrator-linux-amd64\nbb  sandboxd-fleet-linux-amd64\ncc *envd-linux-amd64\ndd  pilldrops-linux-amd64\n"
+	sums := "aa  orchestrator-linux-amd64\nbb  sandboxd-fleet-linux-amd64\ncc *envd-linux-amd64\ndd  pilldrops-linux-amd64\nee  source.tar.gz\n"
 	got := missingFiles([]byte(sums))
 	if len(got) != 1 || got[0] != "pilldrops-join-linux-amd64" {
 		t.Fatalf("missing = %v", got)
@@ -204,6 +204,7 @@ func TestScriptsRender(t *testing.T) {
 		"sandbox.example.com, *.sandbox.example.com {",
 		"$ipt -A PILLDROPS-IN -p tcp --dport 9090 -j DROP",
 		"for ipt in iptables ip6tables",
+		"pilldrops-join-linux-amd64 source.tar.gz\"",
 		"http://127.0.0.1:9090/dashboard/setup",
 		"printf '%s' '" + a.sec["ADMIN_PASSWORD"] + "' > \"$stage/password\"",
 	} {
@@ -243,6 +244,9 @@ func TestScriptsRender(t *testing.T) {
 		if !strings.Contains(node, "ADVERTISE_URL='http://10.0.0.21:18080'") || !strings.Contains(node, `'tok'\''en'`) {
 			t.Errorf("%s node script does not carry the advertise URL and quoted token", runtime)
 		}
+		if strings.Contains(node, "archive/refs") || !strings.Contains(node, `files="envd-linux-amd64 pilldrops-linux-amd64 source.tar.gz"`) {
+			t.Errorf("%s node script does not take the source from the signed release", runtime)
+		}
 		if got := strings.Contains(node, "provision-node.sh"); got != (runtime == "firecracker") {
 			t.Errorf("%s node script: provision-node.sh present = %v", runtime, got)
 		}
@@ -279,10 +283,10 @@ func TestCheckHostsResolvesRuntime(t *testing.T) {
 	a := testApplier(t)
 	a.ssh = func(_ context.Context, target, _ string, out io.Writer) error {
 		if target == "ubuntu@10.0.0.21" {
-			fmt.Fprintln(out, "sudo: unable to resolve host node-a: Name or service not known")
-			fmt.Fprintln(out, "kvm")
+			fmt.Fprintln(out, "sudo: unable to resolve host kvm: Name or service not known")
+			fmt.Fprintln(out, "pilldrops-probe kvm=y joined=y")
 		} else {
-			fmt.Fprintln(out, "none")
+			fmt.Fprintln(out, "pilldrops-probe kvm=n joined=n")
 		}
 		return nil
 	}
@@ -291,6 +295,9 @@ func TestCheckHostsResolvesRuntime(t *testing.T) {
 	}
 	if a.cfg.Nodes[0].Runtime != "firecracker" || a.cfg.Nodes[1].Runtime != "docker" {
 		t.Fatalf("runtimes = %s, %s", a.cfg.Nodes[0].Runtime, a.cfg.Nodes[1].Runtime)
+	}
+	if !a.cfg.Nodes[0].joined || a.cfg.Nodes[1].joined {
+		t.Fatalf("joined = %v, %v; want it read from each host", a.cfg.Nodes[0].joined, a.cfg.Nodes[1].joined)
 	}
 
 	a.cfg.Nodes[1].Runtime = "firecracker"

@@ -6,13 +6,14 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1
 # ssh forwards the operator's locale, which a fresh host may not have.
 export LC_ALL=C.UTF-8
+# Package installs wait on the dpkg lock: a fresh host is often still running unattended-upgrades.
 say() { printf '   %s\n' "$*"; }
 
 say "packages"
 echo 'iptables-persistent iptables-persistent/autosave_v4 boolean false' | debconf-set-selections
 echo 'iptables-persistent iptables-persistent/autosave_v6 boolean false' | debconf-set-selections
-apt-get update -qq
-apt-get install -y -qq curl ca-certificates tar postgresql caddy iptables-persistent{{if eq .TLS.Mode "cloudflare"}} certbot python3-certbot-dns-cloudflare{{end}} >/dev/null
+apt-get -o DPkg::Lock::Timeout=300 update -qq
+apt-get -o DPkg::Lock::Timeout=300 install -y -qq curl ca-certificates tar postgresql caddy iptables-persistent{{if eq .TLS.Mode "cloudflare"}} certbot python3-certbot-dns-cloudflare{{end}} >/dev/null
 
 say "release {{.Tag}}"
 stage=$(mktemp -d)
@@ -20,10 +21,10 @@ trap 'rm -rf "$stage"' EXIT
 base64 -d > "$stage/SHA256SUMS" <<'SUMS'
 {{.SumsB64}}
 SUMS
-files="orchestrator-linux-amd64 sandboxd-fleet-linux-amd64 envd-linux-amd64 pilldrops-join-linux-amd64"
+# The source carries scripts that run as root, so it is checked like the binaries.
+files="orchestrator-linux-amd64 sandboxd-fleet-linux-amd64 envd-linux-amd64 pilldrops-join-linux-amd64 source.tar.gz"
 for f in $files; do curl -fsSL {{sq .ReleaseBase}}"$f" -o "$stage/$f"; done
 (cd "$stage" && grep -E " \*?($(echo "$files" | tr ' ' '|'))\$" SHA256SUMS | sha256sum -c --quiet -)
-curl -fsSL {{sq .SourceURL}} -o "$stage/source.tar.gz"
 rm -rf /opt/pilldrops/src && mkdir -p /opt/pilldrops/src
 tar -xzf "$stage/source.tar.gz" -C /opt/pilldrops/src --strip-components=1
 

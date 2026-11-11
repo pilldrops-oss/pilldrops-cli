@@ -29,6 +29,7 @@ var releaseFiles = []string{
 	"envd-linux-amd64",
 	"pilldrops-join-linux-amd64",
 	"pilldrops-linux-amd64",
+	"source.tar.gz",
 }
 
 var releaseBase = "https://github.com/" + releaseRepo + "/releases/download/"
@@ -81,7 +82,7 @@ func fetchSums(tag string) ([]byte, error) {
 		return nil, fmt.Errorf("the signature over %s SHA256SUMS does not verify; nothing was installed:\n%s", tag, out)
 	}
 	if missing := missingFiles(sums); len(missing) > 0 {
-		return nil, fmt.Errorf("release %s does not ship %s; use sandboxd/v1.2.0 or later", tag, strings.Join(missing, ", "))
+		return nil, fmt.Errorf("release %s does not ship %s; use sandboxd/v1.2.1 or later", tag, strings.Join(missing, ", "))
 	}
 	return sums, nil
 }
