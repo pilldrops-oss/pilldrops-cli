@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -206,6 +207,9 @@ func TestScriptsRender(t *testing.T) {
 		"for ipt in iptables ip6tables",
 		"pilldrops-join-linux-amd64 source.tar.gz\"",
 		"http://127.0.0.1:9090/dashboard/setup",
+		`if [ "$orch_before" != "$(state $orch_files)" ] || ! systemctl is-active -q pilldrops-orchestrator; then`,
+		"|| systemctl restart postgresql",
+		"systemctl reload-or-restart caddy",
 		"printf '%s' '" + a.sec["ADMIN_PASSWORD"] + "' > \"$stage/password\"",
 	} {
 		if !strings.Contains(control, want) {
@@ -217,7 +221,7 @@ func TestScriptsRender(t *testing.T) {
 	}
 	// The console is claimed, and the ports closed, before anything is public.
 	fw, orch, claim, caddy := strings.Index(control, `say "firewall"`), strings.Index(control, "systemctl restart pilldrops-orchestrator"),
-		strings.Index(control, "/dashboard/setup"), strings.Index(control, "systemctl restart caddy")
+		strings.Index(control, "/dashboard/setup"), strings.Index(control, "systemctl reload-or-restart caddy")
 	if !(fw < orch && orch < claim && claim < caddy) {
 		t.Errorf("order: firewall %d, orchestrator %d, claim %d, caddy %d", fw, orch, claim, caddy)
 	}
@@ -236,7 +240,7 @@ func TestScriptsRender(t *testing.T) {
 	for _, runtime := range []string{"firecracker", "docker"} {
 		n := a.cfg.Nodes[0]
 		n.Runtime = runtime
-		node, err := a.nodeScript(n, "tok'en")
+		node, err := a.nodeScript(n, "tok'en", false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -253,7 +257,7 @@ func TestScriptsRender(t *testing.T) {
 	}
 
 	// A node that already joined gets the firewall and domain steps only.
-	rejoin, err := a.nodeScript(a.cfg.Nodes[0], "")
+	rejoin, err := a.nodeScript(a.cfg.Nodes[0], "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,6 +271,22 @@ func TestScriptsRender(t *testing.T) {
 		if !strings.Contains(rejoin, want) {
 			t.Errorf("a joined node's script lacks %q", want)
 		}
+	}
+	if strings.Contains(rejoin, "/opt/pilldrops/bin/sandboxd-linux") {
+		t.Error("a joined node's script replaces binaries without an upgrade")
+	}
+	upgrade, err := a.nodeScript(a.cfg.Nodes[0], "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bashCheck(t, upgrade)
+	for _, want := range []string{`install -m 0755 "$stage/sandboxd-fleet-linux-amd64" /opt/pilldrops/bin/sandboxd-linux`, "sha256sum -c", "restart=1"} {
+		if !strings.Contains(upgrade, want) {
+			t.Errorf("the upgrade script lacks %q", want)
+		}
+	}
+	if strings.Contains(upgrade, "join.sh") {
+		t.Error("an upgrade joins the node again")
 	}
 }
 
@@ -362,5 +382,128 @@ func TestJoinNodeAndWaitNodes(t *testing.T) {
 	joined[advertiseURL(a.cfg.Nodes[1])] = true
 	if err := a.waitNodes(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// fakeFleet is a control plane API: a node list, and a log of the calls that
+// change the fleet.
+type fakeFleet struct {
+	mu        sync.Mutex
+	nodes     []nodeView
+	calls     []string
+	remaining int // sandboxes_remaining a drain answers
+	upgradeTo string
+}
+
+func (f *fakeFleet) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case r.Method == "GET" && r.URL.Path == "/v1/nodes":
+		json.NewEncoder(w).Encode(map[string]any{"nodes": f.nodes})
+		return
+	case strings.HasSuffix(r.URL.Path, "/drain"):
+		json.NewEncoder(w).Encode(map[string]any{"sandboxes_remaining": f.remaining})
+	default:
+		w.Write([]byte("{}"))
+	}
+	f.calls = append(f.calls, r.Method+" "+r.URL.RequestURI())
+}
+
+func (f *fakeFleet) log() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return strings.Join(f.calls, ", ")
+}
+
+func fleetApplier(t *testing.T, f *fakeFleet) *applier {
+	t.Helper()
+	a := testApplier(t)
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	a.http = &http.Client{Transport: toServer{srv}}
+	old, oldWait := pollEvery, nodeWait
+	pollEvery, nodeWait = time.Millisecond, time.Second
+	t.Cleanup(func() { pollEvery, nodeWait = old, oldWait })
+	return a
+}
+
+func TestUpgradeNodeCordonsAndRestores(t *testing.T) {
+	for _, tc := range []struct{ status, want string }{
+		{"available", "POST /v1/nodes/node-1/cordon, POST /v1/nodes/node-1/uncordon"},
+		{"cordoned", ""}, // the operator's cordon is left alone
+	} {
+		f := &fakeFleet{nodes: []nodeView{{ID: "node-1", URL: "http://10.0.0.21:18080", Healthy: true, Status: tc.status, Version: "v1.1.0"}}}
+		a := fleetApplier(t, f)
+		var ran string
+		a.ssh = func(_ context.Context, _, script string, _ io.Writer) error {
+			ran = script
+			f.mu.Lock()
+			f.nodes[0].Version = "v1.2.0" // the restart brings it up on the new release
+			f.mu.Unlock()
+			return nil
+		}
+		if err := a.upgradeNode(context.Background(), a.cfg.Nodes[0], f.nodes[0]); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(ran, "sandboxd-fleet-linux-amd64") {
+			t.Error("the node was not given the new binaries")
+		}
+		if got := f.log(); got != tc.want {
+			t.Errorf("status %s: calls %q, want %q", tc.status, got, tc.want)
+		}
+	}
+}
+
+func TestUpgradeNodeWaitsForTheNewVersion(t *testing.T) {
+	f := &fakeFleet{nodes: []nodeView{{ID: "node-1", URL: "http://10.0.0.21:18080", Healthy: true, Status: "available", Version: "v1.1.0"}}}
+	a := fleetApplier(t, f)
+	a.ssh = func(context.Context, string, string, io.Writer) error { return nil } // never comes back new
+	err := a.upgradeNode(context.Background(), a.cfg.Nodes[0], f.nodes[0])
+	if err == nil || !strings.Contains(err.Error(), "did not come back healthy on v1.2.0") {
+		t.Fatalf("err = %v", err)
+	}
+	if strings.Contains(f.log(), "uncordon") {
+		t.Error("a node that did not come back on the new version was uncordoned")
+	}
+}
+
+func TestRemoveUnlisted(t *testing.T) {
+	listed := nodeView{ID: "node-1", URL: "http://10.0.0.21:18080"}
+	gone := nodeView{ID: "node-9", URL: "http://10.0.0.99:18080"}
+	registered := map[string]nodeView{listed.URL: listed, gone.URL: gone}
+
+	f := &fakeFleet{}
+	a := fleetApplier(t, f)
+	if err := a.removeUnlisted(context.Background(), registered, false); err != nil || f.log() != "" {
+		t.Fatalf("without --prune: err=%v calls=%q, want no calls", err, f.log())
+	}
+
+	if err := a.removeUnlisted(context.Background(), registered, true); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := f.log(), "POST /v1/nodes/node-9/drain?migrate=1, DELETE /v1/nodes/node-9"; got != want {
+		t.Fatalf("calls %q, want %q", got, want)
+	}
+
+	stuck := &fakeFleet{remaining: 2}
+	a = fleetApplier(t, stuck)
+	err := a.removeUnlisted(context.Background(), registered, true)
+	if err == nil || !strings.Contains(err.Error(), "2 sandbox(es)") || strings.Contains(stuck.log(), "DELETE") {
+		t.Fatalf("err=%v calls=%q, want the node kept", err, stuck.log())
+	}
+}
+
+func TestWaitRegisteredWaitsForJoinedNodes(t *testing.T) {
+	f := &fakeFleet{}
+	a := fleetApplier(t, f)
+	a.cfg.Nodes[0].joined = true
+	if _, err := a.waitRegistered(context.Background()); err == nil {
+		t.Fatal("returned before the joined node heartbeated")
+	}
+	f.nodes = []nodeView{{ID: "node-1", URL: "http://10.0.0.21:18080", Healthy: true}}
+	got, err := a.waitRegistered(context.Background())
+	if err != nil || got["http://10.0.0.21:18080"].ID != "node-1" {
+		t.Fatalf("got %v, err %v", got, err)
 	}
 }

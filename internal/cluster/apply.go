@@ -36,7 +36,11 @@ var (
 
 // Apply brings the fleet described by the cluster.toml at path to life, or
 // back in line with it. Every step checks before it acts, so it can run again.
-func Apply(ctx context.Context, path string, out io.Writer) error {
+//
+// A joined node on another release is upgraded in place. With prune, a node
+// the control plane knows that cluster.toml no longer lists is drained and
+// removed; without it, apply only names such nodes.
+func Apply(ctx context.Context, path string, out io.Writer, prune bool) error {
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		return err
@@ -77,22 +81,29 @@ func Apply(ctx context.Context, path string, out io.Writer) error {
 		return err
 	}
 
+	registered, err := a.waitRegistered(ctx)
+	if err != nil {
+		return err
+	}
 	for _, n := range cfg.Nodes {
-		if n.joined {
+		var err error
+		switch view, ok := registered[advertiseURL(n)]; {
+		case !n.joined:
+			fmt.Fprintf(out, "── node %s (%s)\n", n.Host.Host, n.Runtime)
+			err = a.joinNode(ctx, n)
+		case ok && view.Version != a.nodeVersion():
+			fmt.Fprintf(out, "── node %s: upgrading %s to %s\n", n.Host.Host, view.Version, a.nodeVersion())
+			err = a.upgradeNode(ctx, n, view)
+		default:
 			fmt.Fprintf(out, "── node %s already joined; checking its firewall and domain\n", n.Host.Host)
-			script, err := a.nodeScript(n, "")
-			if err == nil {
-				err = a.ssh(ctx, a.cfg.Target(n.Host), script, out)
-			}
-			if err != nil {
-				return fmt.Errorf("node %s: %w", n.Host.Host, err)
-			}
-			continue
+			err = a.runNodeScript(ctx, n, "", false)
 		}
-		fmt.Fprintf(out, "── node %s (%s)\n", n.Host.Host, n.Runtime)
-		if err := a.joinNode(ctx, n); err != nil {
+		if err != nil {
 			return fmt.Errorf("node %s: %w", n.Host.Host, err)
 		}
+	}
+	if err := a.removeUnlisted(ctx, registered, prune); err != nil {
+		return err
 	}
 
 	fmt.Fprintln(out, "── checking every node reports healthy")
@@ -195,8 +206,9 @@ func (a *applier) controlScript() (string, error) {
 	return render("control", d)
 }
 
-func (a *applier) nodeScript(n Node, token string) (string, error) {
+func (a *applier) nodeScript(n Node, token string, upgrade bool) (string, error) {
 	d := a.base()
+	d["Upgrade"] = upgrade
 	d["Runtime"] = n.Runtime
 	d["ControlIP"] = a.cfg.Control.PrivateIP
 	d["Token"] = token
@@ -224,17 +236,113 @@ func (a *applier) joinNode(ctx context.Context, n Node) error {
 	if err := a.api(ctx, "POST", "/v1/join-tokens", &tok); err != nil {
 		return fmt.Errorf("mint a join token: %w", err)
 	}
-	script, err := a.nodeScript(n, tok.Token)
+	return a.runNodeScript(ctx, n, tok.Token, false)
+}
+
+func (a *applier) runNodeScript(ctx context.Context, n Node, token string, upgrade bool) error {
+	script, err := a.nodeScript(n, token, upgrade)
 	if err != nil {
 		return err
 	}
 	return a.ssh(ctx, a.cfg.Target(n.Host), script, a.out)
 }
 
+// nodeVersion is how a node on cfg.Version reports itself in /v1/nodes.
+func (a *applier) nodeVersion() string { return strings.TrimPrefix(a.cfg.Version, "sandboxd/") }
+
+// upgradeNode swaps a node's binaries while it is cordoned, so nothing new is
+// placed on it during the restart. Its sandboxes are paused by the restart
+// and resumed after it, on the same node. A node the operator cordoned or is
+// draining stays that way.
+func (a *applier) upgradeNode(ctx context.Context, n Node, view nodeView) error {
+	ours := view.Status != "cordoned" && view.Status != "draining"
+	if ours {
+		if err := a.api(ctx, "POST", "/v1/nodes/"+view.ID+"/cordon", nil); err != nil {
+			return fmt.Errorf("cordon: %w", err)
+		}
+	}
+	if err := a.runNodeScript(ctx, n, "", true); err != nil {
+		return fmt.Errorf("%w; it is still cordoned: uncordon it with POST /v1/nodes/%s/uncordon once fixed", err, view.ID)
+	}
+	want := a.nodeVersion()
+	err := poll(ctx, nodeWait, func() (bool, error) {
+		got, err := a.nodes(ctx)
+		v := got[advertiseURL(n)]
+		return err == nil && v.Healthy && v.Version == want, nil
+	}, func() error {
+		return fmt.Errorf("did not come back healthy on %s within %v; check `journalctl -u sandboxd`", want, nodeWait)
+	})
+	if err != nil || !ours {
+		return err
+	}
+	return a.api(ctx, "POST", "/v1/nodes/"+view.ID+"/uncordon", nil)
+}
+
+// waitRegistered lists the fleet once every node apply found joined has
+// heartbeated: a control plane without Redis starts with an empty list.
+func (a *applier) waitRegistered(ctx context.Context) (map[string]nodeView, error) {
+	var got map[string]nodeView
+	err := poll(ctx, nodeWait, func() (bool, error) {
+		var err error
+		if got, err = a.nodes(ctx); err != nil {
+			return false, nil
+		}
+		for _, n := range a.cfg.Nodes {
+			if _, ok := got[advertiseURL(n)]; n.joined && !ok {
+				return false, nil
+			}
+		}
+		return true, nil
+	}, func() error {
+		return fmt.Errorf("the control plane has not heard from every joined node within %v; check `journalctl -u sandboxd` on them", nodeWait)
+	})
+	return got, err
+}
+
+// removeUnlisted drains and deletes registered nodes cluster.toml no longer
+// lists. A drain moves each sandbox to another node; if any could not move,
+// the node is left in the fleet rather than deleted with sandboxes on it.
+func (a *applier) removeUnlisted(ctx context.Context, registered map[string]nodeView, prune bool) error {
+	listed := map[string]bool{}
+	for _, n := range a.cfg.Nodes {
+		listed[advertiseURL(n)] = true
+	}
+	for url, view := range registered {
+		if listed[url] {
+			continue
+		}
+		if !prune {
+			fmt.Fprintf(a.out, "── node %s (%s) is in the fleet but not in cluster.toml; apply --prune drains and removes it\n", view.ID, url)
+			continue
+		}
+		fmt.Fprintf(a.out, "── node %s (%s): draining, then removing\n", view.ID, url)
+		var drain struct {
+			Remaining int `json:"sandboxes_remaining"`
+		}
+		if err := a.api(ctx, "POST", "/v1/nodes/"+view.ID+"/drain?migrate=1", &drain); err != nil {
+			return fmt.Errorf("drain node %s: %w", view.ID, err)
+		}
+		if drain.Remaining > 0 {
+			return fmt.Errorf("node %s still has %d sandbox(es) that could not move to another node; it is draining and was not removed", view.ID, drain.Remaining)
+		}
+		if err := a.api(ctx, "DELETE", "/v1/nodes/"+view.ID, nil); err != nil {
+			return fmt.Errorf("remove node %s: %w", view.ID, err)
+		}
+		fmt.Fprintf(a.out, "   removed; %s still runs sandboxd, stop it there\n", url)
+	}
+	return nil
+}
+
 func (a *applier) waitHealthy(ctx context.Context) error {
 	url := "https://" + a.cfg.Domain + "/health"
 	return poll(ctx, healthWait, func() (bool, error) {
-		resp, err := a.client().Get(url)
+		hctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(hctx, "GET", url, nil)
+		if err != nil {
+			return false, err
+		}
+		resp, err := a.client().Do(req)
 		if err != nil {
 			return false, nil
 		}
@@ -246,8 +354,11 @@ func (a *applier) waitHealthy(ctx context.Context) error {
 }
 
 type nodeView struct {
+	ID      string `json:"id"`
 	URL     string `json:"url"`
 	Healthy bool   `json:"healthy"`
+	Status  string `json:"status"`
+	Version string `json:"version"`
 }
 
 func (a *applier) nodes(ctx context.Context) (map[string]nodeView, error) {
@@ -284,6 +395,13 @@ func (a *applier) waitNodes(ctx context.Context) error {
 }
 
 func (a *applier) api(ctx context.Context, method, path string, into any) error {
+	// A drain moves every sandbox before it answers.
+	limit := 30 * time.Second
+	if strings.Contains(path, "/drain") {
+		limit = 30 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, method, "https://"+a.cfg.Domain+path, nil)
 	if err != nil {
 		return err
@@ -298,6 +416,9 @@ func (a *applier) api(ctx context.Context, method, path string, into any) error 
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("%s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(body)))
 	}
+	if into == nil {
+		return nil
+	}
 	return json.Unmarshal(body, into)
 }
 
@@ -305,7 +426,7 @@ func (a *applier) client() *http.Client {
 	if a.http != nil {
 		return a.http
 	}
-	return &http.Client{Timeout: 30 * time.Second}
+	return &http.Client{}
 }
 
 func poll(ctx context.Context, limit time.Duration, done func() (bool, error), timeout func() error) error {

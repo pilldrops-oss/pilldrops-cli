@@ -8,6 +8,9 @@ export DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1
 export LC_ALL=C.UTF-8
 # Package installs wait on the dpkg lock: a fresh host is often still running unattended-upgrades.
 say() { printf '   %s\n' "$*"; }
+# A hash of the files a service runs from, so a re-run restarts only what changed.
+state() { cat "$@" 2>/dev/null | sha256sum; }
+orch_files="/opt/pilldrops/bin/orchestrator /etc/pilldrops/orchestrator.env /etc/systemd/system/pilldrops-orchestrator.service"
 
 say "packages"
 echo 'iptables-persistent iptables-persistent/autosave_v4 boolean false' | debconf-set-selections
@@ -30,6 +33,7 @@ tar -xzf "$stage/source.tar.gz" -C /opt/pilldrops/src --strip-components=1
 
 # The orchestrator serves these to nodes under /bin/; a node's install.sh
 # checks them against this SHA256SUMS.
+orch_before=$(state $orch_files)
 install -d -m 0755 /opt/pilldrops/bin /opt/pilldrops/node-bin
 install -m 0755 "$stage/orchestrator-linux-amd64" /opt/pilldrops/bin/orchestrator
 install -m 0644 "$stage/sandboxd-fleet-linux-amd64" /opt/pilldrops/node-bin/sandboxd-linux
@@ -57,6 +61,7 @@ netfilter-persistent save >/dev/null 2>&1
 
 say "postgres"
 pgconf=$(ls -d /etc/postgresql/*/main | tail -1)
+pg_before=$(state "$pgconf/conf.d/pilldrops.conf" "$pgconf/pg_hba.conf")
 echo "listen_addresses = 'localhost,{{.Control.PrivateIP}}'" > "$pgconf/conf.d/pilldrops.conf"
 sed -i '/# pilldrops-begin/,/# pilldrops-end/d' "$pgconf/pg_hba.conf"
 {
@@ -66,7 +71,7 @@ sed -i '/# pilldrops-begin/,/# pilldrops-end/d' "$pgconf/pg_hba.conf"
 {{- end}}
   echo '# pilldrops-end'
 } >> "$pgconf/pg_hba.conf"
-systemctl restart postgresql
+[ "$pg_before" = "$(state "$pgconf/conf.d/pilldrops.conf" "$pgconf/pg_hba.conf")" ] || systemctl restart postgresql
 sudo -u postgres psql -q -v ON_ERROR_STOP=1 <<'SQL'
 SELECT 'CREATE ROLE pilldrops LOGIN' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'pilldrops') \gexec
 ALTER ROLE pilldrops PASSWORD '{{.Secrets.POSTGRES_PASSWORD}}';
@@ -114,7 +119,9 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable pilldrops-orchestrator >/dev/null 2>&1
-systemctl restart pilldrops-orchestrator
+if [ "$orch_before" != "$(state $orch_files)" ] || ! systemctl is-active -q pilldrops-orchestrator; then
+  systemctl restart pilldrops-orchestrator
+fi
 i=0
 until curl -fs --max-time 2 -o /dev/null http://127.0.0.1:9090/health; do
   i=$((i + 1))
@@ -198,4 +205,4 @@ CADDY
 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 ||
   { caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile; exit 1; }
 systemctl enable caddy >/dev/null 2>&1
-systemctl restart caddy
+systemctl reload-or-restart caddy

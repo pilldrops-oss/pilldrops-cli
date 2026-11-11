@@ -341,9 +341,10 @@ agent webhook add <id> <url> --event E ...; agent webhook rm <id> <hookID> --con
 		},
 		{
 			name: "cluster", run: cmdCluster, subs: []string{"apply", "example"}, humanOnly: true,
-			help: `cluster apply [-f cluster.toml]   install or update a self-hosted fleet over ssh:
-                       control host, Postgres, HTTPS and nodes. cluster example
-                       prints a cluster.toml to start from`,
+			help: `cluster apply [-f cluster.toml] [--prune]   install, upgrade or update a self-hosted
+                       fleet over ssh: control host, Postgres, HTTPS and nodes. A new
+                       version upgrades each node in turn; --prune drains and removes
+                       nodes no longer listed. cluster example prints a cluster.toml`,
 			example: `pilldrops cluster example`,
 		},
 		{
