@@ -2,7 +2,8 @@ set -euo pipefail
 # One node: set the host up for its runtime, allow the node port only from the
 # control host, join the fleet with a one-time token, and give it the preview
 # domain. A node that has already joined gets no token and only the firewall
-# and domain steps, which also finish a join that stopped part way.
+# and domain steps, which also finish a join that stopped part way, plus the
+# new binaries when it is being upgraded.
 # Rendered by apply.go and run as root over ssh.
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1
 # ssh forwards the operator's locale, which a fresh host may not have.
@@ -79,10 +80,29 @@ JOIN_TOKEN_FILE="$stage/token" ORCHESTRATOR_URL={{sq .OrchestratorURL}} NODE_ZON
   ADVERTISE_URL={{sq .AdvertiseURL}} sh "$stage/join.sh" >/dev/null
 {{- end}}
 
+restart=
+{{- if .Upgrade}}
+
+say "upgrade to {{.Tag}}"
+base64 -d > "$stage/SHA256SUMS" <<'SUMS'
+{{.SumsB64}}
+SUMS
+files="sandboxd-fleet-linux-amd64 envd-linux-amd64 pilldrops-linux-amd64"
+for f in $files; do curl -fsSL {{sq .ReleaseBase}}"$f" -o "$stage/$f"; done
+(cd "$stage" && grep -E " \*?($(echo "$files" | tr ' ' '|'))\$" SHA256SUMS | sha256sum -c --quiet -)
+# install replaces each file, so the running binaries are untouched until the restart.
+install -m 0755 "$stage/sandboxd-fleet-linux-amd64" /opt/pilldrops/bin/sandboxd-linux
+install -m 0755 "$stage/envd-linux-amd64" /opt/pilldrops/bin/envd
+install -m 0755 "$stage/pilldrops-linux-amd64" /opt/pilldrops/bin/pilldrops-linux
+restart=1
+{{- end}}
+
 # The join writes the node's identity; previews also need the domain, which
 # it does not carry.
 if ! grep -qx 'SANDBOXD_SANDBOX_DOMAIN={{.Domain}}' /etc/sandboxd.env; then
   sed -i '/^SANDBOXD_SANDBOX_DOMAIN=/d' /etc/sandboxd.env
   echo 'SANDBOXD_SANDBOX_DOMAIN={{.Domain}}' >> /etc/sandboxd.env
-  systemctl restart sandboxd
+  restart=1
 fi
+# A restart pauses the node's sandboxes and resumes them when it is back.
+[ -z "$restart" ] || systemctl restart sandboxd
