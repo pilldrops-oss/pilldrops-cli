@@ -25,7 +25,7 @@ import (
 
 // ServerVersion is reported in the initialize handshake. Keep in step with
 // internal/cli.Version when releasing.
-const ServerVersion = "1.8.1"
+const ServerVersion = "1.9.0"
 
 // protocolVersions we accept, newest first; initialize echoes the client's
 // version when supported, else offers our newest.
