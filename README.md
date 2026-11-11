@@ -16,7 +16,7 @@ chmod +x pilldrops
 go install github.com/pilldrops-oss/pilldrops-cli/cmd/pilldrops@latest
 ```
 
-macOS and Linux, amd64 and arm64. `pilldrops upgrade` replaces the binary with
+macOS, Linux and Windows, amd64 and arm64 (`pilldrops_windows_amd64.exe`). On macOS and Linux `pilldrops upgrade` replaces the binary with
 the latest release.
 
 ## Point it at your server
