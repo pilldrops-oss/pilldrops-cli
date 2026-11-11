@@ -9,7 +9,7 @@ import (
 // reported by doctor. Bump on every user-visible CLI change — installed
 // binaries update themselves from /dl/ via `pilldrops upgrade`.
 // Keep in step with internal/mcp.ServerVersion.
-const Version = "1.8.1"
+const Version = "1.9.0"
 
 func cmdVersion(c *cmdCtx, _ []string) int {
 	if c.jsonOut {
