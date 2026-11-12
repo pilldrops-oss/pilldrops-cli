@@ -11,17 +11,18 @@ const { join } = require('node:path')
 const { spawnSync } = require('node:child_process')
 
 const RELEASES = 'https://github.com/pilldrops-oss/pilldrops-cli/releases/latest/download'
-const BIN = join(__dirname, 'pilldrops-bin')
+const EXE = process.platform === 'win32' ? '.exe' : ''
+const BIN = join(__dirname, 'pilldrops-bin' + EXE)
 
 async function ensureBinary() {
   if (existsSync(BIN)) return
-  const os = { darwin: 'darwin', linux: 'linux' }[process.platform]
+  const os = { darwin: 'darwin', linux: 'linux', win32: 'windows' }[process.platform]
   const arch = { arm64: 'arm64', x64: 'amd64' }[process.arch]
   if (!os || !arch) {
-    console.error(`@pilldrops/cli: unsupported platform ${process.platform}/${process.arch} (darwin/linux, arm64/x64)`)
+    console.error(`@pilldrops/cli: unsupported platform ${process.platform}/${process.arch} (darwin/linux/win32, arm64/x64)`)
     process.exit(1)
   }
-  const name = `pilldrops_${os}_${arch}`
+  const name = `pilldrops_${os}_${arch}${EXE}`
   const url = process.env.PILLDROPS_BASE_URL ? `${process.env.PILLDROPS_BASE_URL}/dl/${name}` : `${RELEASES}/${name}`
   console.error(`→ downloading pilldrops (${os}/${arch}) from ${url} …`)
   const res = await fetch(url)

@@ -21,10 +21,11 @@ jobs:
       - name: Build binaries (names match the portal's /dl/ layout)
         run: |
           mkdir -p dist
-          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
+            ext=""; [ "${target%/*}" = windows ] && ext=.exe
             GOOS=${target%/*} GOARCH=${target#*/} CGO_ENABLED=0 \
               go build -trimpath -ldflags="-s -w" \
-              -o "dist/pilldrops_${target%/*}_${target#*/}" ./cmd/pilldrops/
+              -o "dist/pilldrops_${target%/*}_${target#*/}${ext}" ./cmd/pilldrops/
           done
           (cd dist && sha256sum pilldrops_* > SHA256SUMS)
           ls -lh dist/

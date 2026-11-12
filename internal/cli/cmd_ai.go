@@ -193,6 +193,8 @@ const aiTail = `
 
 - Do not use pilldrops shell, or bare pilldrops on a terminal: that prompt is for
   people, needs a terminal, and has no JSON contract. Run each command directly.
+- Do not run pilldrops cluster apply unless the user asked to install or change their
+  own fleet: it sets up servers over ssh as root.
 - Quote through the shell boundary: pilldrops exec sb_x -- bash -c 'complex | pipeline'.
 - exec runs one command and buffers its output, so nothing that reads a terminal
   works in it: editors, pagers, REPLs, interactive installers. connect (alias ssh)
