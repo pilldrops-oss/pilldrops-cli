@@ -139,6 +139,7 @@ sandbox set-timeout <id> <secs>   hard lifetime from now (-1 = persistent, plan
                        (-1 = never, 0 = platform default)
 sandbox share|unshare <id>    org-visible or private; share wipes the agent
                        logins inside first, and unshare does not restore them
+                       (a public link to an app on this machine: pilldrops share <port>)
 sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
                        and is never prompted for, as on every destructive verb.
                        A missing <id> IS asked for, on a terminal only`,
@@ -163,6 +164,13 @@ sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
 			// GET the sandbox, find terminal_url, build the websocket URL —
 			// without holding the sweep open.
 			example: `pilldrops --json connect $SB --print`,
+		},
+		{
+			name: "share", run: cmdShare, humanOnly: true,
+			help: `share <port> [--ttl 8h]   a public URL for an app on this machine, until you press
+                       Ctrl-C. Anyone with the link can open it. Not the same as
+                       sandbox share <id>, which sets a sandbox's visibility`,
+			example: `pilldrops --json version`, // it runs until stopped, so the sweep cannot hold it
 		},
 		{
 			name: "shell", run: cmdShell, humanOnly: true,
