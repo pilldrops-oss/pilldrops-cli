@@ -286,7 +286,8 @@ history <id>           one past sandbox: charge, runtime, logs`,
                        team invite <email> [--role R] | uninvite <email> --confirm
                        team role <user_id> <role> | remove <user_id> --confirm
                        manage people; a person approves the login in a browser`,
-			`pilldrops --json team orgs`).needs("team"),
+			// Every team verb needs a login a person approves in a browser.
+			`pilldrops --json version`).needs("team"),
 		group("volume", volumeVerbs(), `volume create [name] --size-mb N | list | get <id> | rm <id> --confirm
                        a disk that outlives its sandbox; attach it with
                        sandbox create --volume <id>:<path>`,
