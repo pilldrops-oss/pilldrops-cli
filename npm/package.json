@@ -1,6 +1,6 @@
 {
   "name": "@pilldrops/cli",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "description": "PillDrops CLI — AI-native sandboxes (secure code execution + app hosting) from your terminal. Installs the `pilldrops` command.",
   "homepage": "https://github.com/pilldrops-oss/pilldrops-cli#readme",
   "repository": {
