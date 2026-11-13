@@ -71,6 +71,25 @@ func cronVerbs() []apiVerb {
 	}
 }
 
+func webhookVerbs() []apiVerb {
+	return []apiVerb{
+		{sub: "list", method: "GET", path: "/v1/webhooks", rows: "webhooks", cols: []string{"id", "url", "events", "enabled", "last_status", "consecutive_failures"}},
+		{sub: "add", args: "<url> --event E ...", method: "POST", path: "/v1/webhooks", flags: webhookFlags(0)},
+		{sub: "rm", args: "<id> --confirm", method: "DELETE", path: "/v1/webhooks/%s", confirm: true},
+		{sub: "test", args: "<id>", method: "POST", path: "/v1/webhooks/%s/test",
+			failed: func(obj map[string]any) bool { return obj["ok"] != true }},
+		{sub: "toggle", args: "<id> --on|--off", method: "POST", path: "/v1/webhooks/%s/toggle", flags: func(fs *flag.FlagSet) func(*verbCall) error {
+			enabled := onOff(fs, "on", "off", "deliver events or hold them")
+			return func(v *verbCall) error {
+				on, err := enabled()
+				v.body = map[string]any{"enabled": on}
+				return err
+			}
+		}},
+		{sub: "deliveries", method: "GET", path: "/v1/webhooks/deliveries", rows: "deliveries", cols: []string{"id", "webhook_id", "event_type", "sandbox_id", "state", "attempts", "last_status", "created_at"}},
+	}
+}
+
 func functionVerbs() []apiVerb {
 	return []apiVerb{
 		{sub: "list", method: "GET", path: "/v1/functions", rows: "functions", cols: []string{"name", "template", "start", "port", "replicas", "invokes"}},

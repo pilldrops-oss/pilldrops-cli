@@ -7,7 +7,7 @@ import (
 )
 
 // The customer API beyond sandboxes themselves: agents, cron, functions,
-// projects, threads, images, integrations and the audit log. Plain REST calls,
+// projects, threads, webhooks, images, integrations and the audit log. Plain REST calls,
 // so they are declared as a table. Maintained here and copied to the CLI's
 // pkg/mcp, like platformtools.go.
 
@@ -191,6 +191,29 @@ func customerTools() []tool {
 			args: map[string]any{"title": prop("string", "name for the thread")}, bodyFields: []string{"title"}},
 		{name: "delete_thread", method: "DELETE", path: "/v1/threads/{id}", desc: "Delete a saved thread.",
 			args: withArgs(byID("thread"), map[string]any{"confirm": confirm}), required: []string{"id", "confirm"}, confirm: true},
+
+		{name: "list_webhooks", method: "GET", path: "/v1/webhooks",
+			desc: "Webhooks that report sandbox lifecycle events for the whole organization, with the events one can subscribe to.",
+			args: map[string]any{}},
+		{name: "create_webhook", method: "POST", path: "/v1/webhooks",
+			desc: "Send a signed request to a URL when a sandbox in this organization starts, ends, pauses or runs into trouble. " +
+				"The reply holds the signing secret once; it cannot be read again.",
+			args: map[string]any{
+				"url": prop("string", "https URL reachable from the internet"),
+				"events": map[string]any{"type": "array", "items": map[string]any{"type": "string"},
+					"description": "event types to send, e.g. sandbox.created, sandbox.ended; list_webhooks names them all"},
+			},
+			required: []string{"url", "events"}, bodyFields: []string{"url", "events"}},
+		{name: "test_webhook", method: "POST", path: "/v1/webhooks/{id}/test",
+			desc: "Send one signed test request to a webhook and report how its endpoint answered.",
+			args: byID("webhook"), required: []string{"id"}},
+		{name: "toggle_webhook", method: "POST", path: "/v1/webhooks/{id}/toggle", desc: "Turn a webhook on or off.",
+			args:     withArgs(byID("webhook"), map[string]any{"enabled": prop("boolean", "true to deliver events")}),
+			required: []string{"id", "enabled"}, bodyFields: []string{"enabled"}},
+		{name: "delete_webhook", method: "DELETE", path: "/v1/webhooks/{id}", desc: "Delete a webhook and its signing secret.",
+			args: withArgs(byID("webhook"), map[string]any{"confirm": confirm}), required: []string{"id", "confirm"}, confirm: true},
+		{name: "list_webhook_deliveries", method: "GET", path: "/v1/webhooks/deliveries",
+			desc: "Recent webhook deliveries, newest first, with how each endpoint answered.", args: map[string]any{}},
 
 		{name: "list_images", method: "GET", path: "/v1/images", desc: "Images sandboxes can boot from, including your own custom ones.",
 			args: map[string]any{}},

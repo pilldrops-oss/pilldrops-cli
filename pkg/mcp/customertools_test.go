@@ -25,6 +25,12 @@ func TestCustomerToolsCallTheRouteTheyClaim(t *testing.T) {
 		{"run_cron_job", id, "POST", "/v1/cron/x%2F1/run", ""},
 		{"toggle_cron_job", map[string]any{"id": "j1", "enabled": false}, "POST", "/v1/cron/j1/toggle", `{"enabled":false}`},
 		{"delete_cron_job", map[string]any{"id": "j1", "confirm": true}, "DELETE", "/v1/cron/j1", ""},
+		{"list_webhooks", nil, "GET", "/v1/webhooks", ""},
+		{"create_webhook", map[string]any{"url": "https://example.test/h", "events": []any{"sandbox.ended"}}, "POST", "/v1/webhooks", `"events":["sandbox.ended"]`},
+		{"test_webhook", map[string]any{"id": "whk_1"}, "POST", "/v1/webhooks/whk_1/test", ""},
+		{"toggle_webhook", map[string]any{"id": "whk_1", "enabled": false}, "POST", "/v1/webhooks/whk_1/toggle", `{"enabled":false}`},
+		{"delete_webhook", map[string]any{"id": "whk_1", "confirm": true}, "DELETE", "/v1/webhooks/whk_1", ""},
+		{"list_webhook_deliveries", nil, "GET", "/v1/webhooks/deliveries", ""},
 		{"list_functions", nil, "GET", "/v1/functions", ""},
 		{"get_function", map[string]any{"name": "f"}, "GET", "/v1/functions/f", ""},
 		{"create_function", map[string]any{"name": "f", "start": "node a.js", "port": float64(8000)}, "POST", "/v1/functions", `"start":"node a.js"`},
@@ -74,6 +80,7 @@ func TestCustomerToolsRefuseWithoutWhatTheyNeed(t *testing.T) {
 		args map[string]any
 	}{
 		{"delete_cron_job", map[string]any{"id": "j1"}},
+		{"delete_webhook", map[string]any{"id": "whk_1"}},
 		{"delete_function", map[string]any{"name": "f"}},
 		{"delete_project", map[string]any{"id": "p1"}},
 		{"delete_thread", map[string]any{"id": "t1"}},

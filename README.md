@@ -78,6 +78,7 @@ pilldrops agent ask <id> 'fix the failing test' --wait   # exits 1 unless the tu
 pilldrops agent events <id> -f
 pilldrops agent token create <id> --scope agent:read --ttl 3600
 pilldrops cron create <id> '0 3 * * *' 'make backup' --name nightly
+pilldrops webhook add https://example.com/hook --event sandbox.created --event sandbox.ended
 pilldrops function create hello --start 'python3 main.py' --port 8000 --file main.py
 pilldrops project list
 pilldrops thread list

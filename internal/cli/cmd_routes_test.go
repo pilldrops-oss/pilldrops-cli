@@ -54,6 +54,13 @@ var customerRoutes = []struct {
 	{"POST /v1/cron/{id}/run", []string{"cron", "run", "c1"}},
 	{"POST /v1/cron/{id}/toggle", []string{"cron", "toggle", "c1", "--off"}},
 
+	{"GET /v1/webhooks", []string{"webhook", "list"}},
+	{"POST /v1/webhooks", []string{"webhook", "add", "https://example.com/h", "--event", "sandbox.created"}},
+	{"DELETE /v1/webhooks/{id}", []string{"webhook", "rm", "whk_1", "--confirm"}},
+	{"POST /v1/webhooks/{id}/test", []string{"webhook", "test", "whk_1"}},
+	{"POST /v1/webhooks/{id}/toggle", []string{"webhook", "toggle", "whk_1", "--off"}},
+	{"GET /v1/webhooks/deliveries", []string{"webhook", "deliveries"}},
+
 	{"GET /v1/functions", []string{"function", "list"}},
 	{"POST /v1/functions", []string{"function", "create", "fn", "--start", "serve"}},
 	{"GET /v1/functions/{name}", []string{"function", "get", "fn"}},
@@ -173,7 +180,7 @@ func TestEveryNewGroupIsInTheRouteList(t *testing.T) {
 			covered[tc.args[0]] = true
 		}
 	}
-	for _, g := range []string{"volume", "agent", "cron", "function", "project", "thread", "integrations", "chat", "chat-link", "channels", "audit"} {
+	for _, g := range []string{"volume", "agent", "cron", "webhook", "function", "project", "thread", "integrations", "chat", "chat-link", "channels", "audit"} {
 		if !covered[g] {
 			t.Errorf("group %q has no route in customerRoutes", g)
 		}
