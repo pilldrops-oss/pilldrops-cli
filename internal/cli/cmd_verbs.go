@@ -135,6 +135,13 @@ func runVerb(c *cmdCtx, group string, verbs []apiVerb, args []string) int {
 		fmt.Fprintln(c.stderr, verbUsage(group, *v))
 		return ExitUsage
 	}
+	// Escaping leaves these as they are, so they would change the route.
+	for _, p := range pos[:min(len(pos), strings.Count(v.path, "%s"))] {
+		if p == "" || p == "." || p == ".." {
+			fmt.Fprintf(c.stderr, "pilldrops %s: %q is not a valid id\n", name, p)
+			return ExitUsage
+		}
+	}
 	if v.confirm && !confirmed {
 		fmt.Fprintf(c.stderr, "pilldrops %s: this cannot be undone — re-run with --confirm\n", name)
 		return ExitUsage
