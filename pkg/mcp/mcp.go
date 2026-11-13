@@ -25,7 +25,7 @@ import (
 
 // ServerVersion is reported in the initialize handshake. Keep in step with
 // internal/cli.Version when releasing.
-const ServerVersion = "1.11.0"
+const ServerVersion = "1.11.1"
 
 // protocolVersions we accept, newest first; initialize echoes the client's
 // version when supported, else offers our newest.
