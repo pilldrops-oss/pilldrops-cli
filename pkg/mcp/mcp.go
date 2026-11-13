@@ -778,6 +778,7 @@ var optionalToolFeatures = map[string][]string{
 	"integrations":  {"list_integrations"},
 	"thread":        {"create_thread", "delete_thread", "get_thread", "list_threads"},
 	"volume":        {"create_volume", "delete_volume", "list_volumes"},
+	"webhook":       {"create_webhook", "delete_webhook", "list_webhook_deliveries", "list_webhooks", "test_webhook", "toggle_webhook"},
 }
 
 func toolServed(name string, supported func(string) bool) bool {

@@ -420,6 +420,26 @@
     ],
     "type": "object"
   },
+  "create_webhook": {
+    "properties": {
+      "events": {
+        "description": "event types to send, e.g. sandbox.created, sandbox.ended; list_webhooks names them all",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "url": {
+        "description": "https URL reachable from the internet",
+        "type": "string"
+      }
+    },
+    "required": [
+      "url",
+      "events"
+    ],
+    "type": "object"
+  },
   "delete_cron_job": {
     "properties": {
       "confirm": {
@@ -551,6 +571,23 @@
     },
     "required": [
       "volume_id"
+    ],
+    "type": "object"
+  },
+  "delete_webhook": {
+    "properties": {
+      "confirm": {
+        "description": "must be true; without it nothing happens",
+        "type": "boolean"
+      },
+      "id": {
+        "description": "webhook id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "confirm"
     ],
     "type": "object"
   },
@@ -815,6 +852,14 @@
     "type": "object"
   },
   "list_volumes": {
+    "properties": {},
+    "type": "object"
+  },
+  "list_webhook_deliveries": {
+    "properties": {},
+    "type": "object"
+  },
+  "list_webhooks": {
     "properties": {},
     "type": "object"
   },
@@ -1154,6 +1199,18 @@
     ],
     "type": "object"
   },
+  "test_webhook": {
+    "properties": {
+      "id": {
+        "description": "webhook id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "type": "object"
+  },
   "toggle_cron_job": {
     "properties": {
       "enabled": {
@@ -1162,6 +1219,23 @@
       },
       "id": {
         "description": "job id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "enabled"
+    ],
+    "type": "object"
+  },
+  "toggle_webhook": {
+    "properties": {
+      "enabled": {
+        "description": "true to deliver events",
+        "type": "boolean"
+      },
+      "id": {
+        "description": "webhook id",
         "type": "string"
       }
     },

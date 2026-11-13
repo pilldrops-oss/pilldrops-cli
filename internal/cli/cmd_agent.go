@@ -45,7 +45,7 @@ func agentVerbs() []apiVerb {
 		{sub: "approve", args: "<id> <approvalID> --allow|--deny", method: "POST", path: agentBase + "/approvals/%s", flags: agentApproveFlags},
 		{sub: "webhooks", args: "<id>", method: "GET", path: agentBase + "/webhooks", rows: "webhooks", envelope: true,
 			cols: []string{"id", "url", "events", "enabled"}},
-		{sub: "webhook add", args: "<id> <url> --event E ...", method: "POST", path: agentBase + "/webhooks", flags: agentWebhookFlags},
+		{sub: "webhook add", args: "<id> <url> --event E ...", method: "POST", path: agentBase + "/webhooks", flags: webhookFlags(1)},
 		{sub: "webhook rm", args: "<id> <hookID> --confirm", method: "DELETE", path: agentBase + "/webhooks/%s", confirm: true},
 		{sub: "webhook test", args: "<id> <hookID>", method: "POST", path: agentBase + "/webhooks/%s/test",
 			failed: func(obj map[string]any) bool { return obj["ok"] != true }},
@@ -130,15 +130,17 @@ func agentApproveFlags(fs *flag.FlagSet) func(*verbCall) error {
 	}
 }
 
-func agentWebhookFlags(fs *flag.FlagSet) func(*verbCall) error {
-	var events stringList
-	fs.Var(&events, "event", "event type to deliver, repeatable")
-	return func(v *verbCall) error {
-		if len(events) == 0 {
-			return errors.New("name at least one --event")
+func webhookFlags(urlPos int) func(*flag.FlagSet) func(*verbCall) error {
+	return func(fs *flag.FlagSet) func(*verbCall) error {
+		var events stringList
+		fs.Var(&events, "event", "event type to deliver, repeatable")
+		return func(v *verbCall) error {
+			if len(events) == 0 {
+				return errors.New("name at least one --event")
+			}
+			v.body = map[string]any{"url": v.pos[urlPos], "events": []string(events)}
+			return nil
 		}
-		v.body = map[string]any{"url": v.pos[1], "events": []string(events)}
-		return nil
 	}
 }
 

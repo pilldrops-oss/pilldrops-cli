@@ -316,6 +316,12 @@ agent webhook add <id> <url> --event E ...; agent webhook rm <id> <hookID> --con
                        [--agent-mode guided|autonomous] | rm <id> --confirm |
                        run <id> (exit 1 if the job failed) | toggle <id> --on|--off`,
 			`pilldrops --json cron list`).needs("cron"),
+		group("webhook", webhookVerbs(), `webhook list | add <url> --event E ... | rm <id> --confirm |
+                       test <id> (exit 1 if the endpoint did not accept it) | toggle <id> --on|--off |
+                       deliveries. Reports sandbox lifecycle events (sandbox.created,
+                       sandbox.ended, …) for the whole organization; add prints the
+                       signing secret once`,
+			`pilldrops --json webhook list`).needs("webhook"),
 		group("function", functionVerbs(), `function list | create <name> --start CMD [--template T] [--port N] [--vcpu N]
                        [--mem MB] [--max-replicas N] [--env K=V ...] [--file local[:remote] ...]
                        | get|code|logs|metrics <name> | rm <name> --confirm`,
