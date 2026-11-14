@@ -130,3 +130,19 @@ func TestToolsFollowServerFeatures(t *testing.T) {
 		t.Errorf("hidden tool: %s, backend calls %d", raw, len(be.calls))
 	}
 }
+
+// A probe that reached an endpoint which refused it is a 200 with ok=false; an
+// agent reading only isError must still see that the webhook does not work.
+func TestTestWebhookReportsAFailedProbeAsAnError(t *testing.T) {
+	for resp, wantErr := range map[string]bool{
+		`{"webhook_id":"whk_1","status":500,"ok":false,"error":"your endpoint answered Internal Server Error"}`: true,
+		`{"webhook_id":"whk_1","status":200,"ok":true}`:                                                         false,
+	} {
+		v := rpc(t, (&fakeBackend{status: 200, resp: resp}).fn(), "tools/call",
+			map[string]any{"name": "test_webhook", "arguments": map[string]any{"id": "whk_1"}})
+		res := v["result"].(map[string]any)
+		if got := res["isError"] == true; got != wantErr {
+			t.Errorf("probe answer %s: isError=%v, want %v", resp, got, wantErr)
+		}
+	}
+}

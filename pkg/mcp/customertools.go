@@ -20,6 +20,9 @@ type restTool struct {
 	bodyFields, queryFields  []string
 	// confirm guards a call that cannot be undone behind confirm=true.
 	confirm bool
+	// failWhenNotOK marks a 200 whose body says "ok": false as a tool error: the
+	// call worked, but what it reports on (a webhook endpoint) did not.
+	failWhenNotOK bool
 }
 
 var pathArg = regexp.MustCompile(`\{(\w+)\}`)
@@ -57,10 +60,16 @@ func (rt restTool) run(a map[string]any, be Backend) map[string]any {
 			body[k] = v
 		}
 	}
+	var res map[string]any
 	if body == nil {
-		return call(be, rt.method, path, nil)
+		res = call(be, rt.method, path, nil)
+	} else {
+		res = call(be, rt.method, path, body)
 	}
-	return call(be, rt.method, path, body)
+	if out, _ := res["structuredContent"].(map[string]any); rt.failWhenNotOK && out["ok"] == false {
+		res["isError"] = true
+	}
+	return res
 }
 
 func customerTools() []tool {
@@ -206,7 +215,7 @@ func customerTools() []tool {
 			required: []string{"url", "events"}, bodyFields: []string{"url", "events"}},
 		{name: "test_webhook", method: "POST", path: "/v1/webhooks/{id}/test",
 			desc: "Send one signed test request to a webhook and report how its endpoint answered.",
-			args: byID("webhook"), required: []string{"id"}},
+			args: byID("webhook"), required: []string{"id"}, failWhenNotOK: true},
 		{name: "toggle_webhook", method: "POST", path: "/v1/webhooks/{id}/toggle", desc: "Turn a webhook on or off.",
 			args:     withArgs(byID("webhook"), map[string]any{"enabled": prop("boolean", "true to deliver events")}),
 			required: []string{"id", "enabled"}, bodyFields: []string{"enabled"}},
