@@ -336,8 +336,9 @@ type connectorSession struct {
 	targets        []connectorTarget
 	stderr         io.Writer
 	connected      bool
-	maxConns       int // 0 means connectorMaxConns
-	refused        int // the HTTP status that stopped the run, if one did
+	maxConns       int           // 0 means connectorMaxConns
+	readWait       time.Duration // 0 means sharePongWait
+	refused        int           // the HTTP status that stopped the run, if one did
 
 	logMu sync.Mutex // connections log from their own goroutines
 
@@ -439,9 +440,13 @@ func (s *connectorSession) connect(ctx context.Context, info connectorSessionInf
 		s.logf("connector %s is up; grant a sandbox one of its targets with: pilldrops sandbox grant <sandbox> %s/<target>\n", s.name, s.name)
 	}
 	s.connected = true
-	_ = ctrl.SetReadDeadline(time.Now().Add(sharePongWait))
+	readWait := s.readWait
+	if readWait == 0 {
+		readWait = sharePongWait
+	}
+	_ = ctrl.SetReadDeadline(time.Now().Add(readWait))
 	ctrl.SetPingHandler(func(data string) error {
-		_ = ctrl.SetReadDeadline(time.Now().Add(sharePongWait))
+		_ = ctrl.SetReadDeadline(time.Now().Add(readWait))
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		return ctrl.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(5*time.Second))
@@ -458,6 +463,9 @@ func (s *connectorSession) connect(ctx context.Context, info connectorSessionInf
 		if err := ctrl.ReadJSON(&msg); err != nil {
 			return "", err
 		}
+		// Any message proves the hub is there: a proxy in between may answer
+		// its pings itself, so the hub's keepalive may be all that arrives.
+		_ = ctrl.SetReadDeadline(time.Now().Add(readWait))
 		switch msg.Type {
 		case "closed":
 			return msg.Reason, nil

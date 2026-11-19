@@ -504,3 +504,31 @@ func TestConnectorRunNamesTheConnectorKeyWhenTheLoginIsRefused(t *testing.T) {
 		t.Fatalf("%s", errS)
 	}
 }
+
+// A proxy in front of the hub may answer its pings itself, so the hub's
+// keepalive messages alone must keep the control socket up.
+func TestConnectorRunStaysUpOnKeepalivesAlone(t *testing.T) {
+	f := newFakeConnectorServer(t, true)
+	targets, err := parseConnectorTargets([]string{"db=127.0.0.1:5432"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := &connectorSession{cl: &Client{Base: f.srv.URL, Key: "k"}, name: "prod", instance: "inst-0123456789abcdef",
+		targets: targets, stderr: io.Discard, readWait: 300 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go cs.run(ctx)
+	f.waitHello(t)
+	f.mu.Lock()
+	first := f.ctrl
+	f.mu.Unlock()
+	for range 10 {
+		f.send(t, map[string]any{"type": "keepalive"})
+		time.Sleep(100 * time.Millisecond)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ctrl != first {
+		t.Fatal("the connector reconnected while keepalives were arriving")
+	}
+}
