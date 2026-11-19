@@ -17,6 +17,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const teamAdminMsg = "only an owner or admin of this team can change connectors and grants; sign in to the dashboard to do it"
+
 // fakeConnectorServer is the API and the connector hub in one, driven by the test.
 type fakeConnectorServer struct {
 	srv          *httptest.Server
@@ -33,6 +35,9 @@ type fakeConnectorServer struct {
 	sessionCode  atomic.Int32 // answered once in place of a session
 	sessionHang  chan struct{}
 	tunnelCode   atomic.Int32 // answered once in place of the control socket
+	sessionMsg   string       // the error of a refused session; set before the run starts
+	connRefused  atomic.Bool  // refuse the data sockets
+	createDenied string       // when set, POST /v1/sandboxes answers 403 with this error
 }
 
 func newFakeConnectorServer(t *testing.T, private bool) *fakeConnectorServer {
@@ -54,7 +59,11 @@ func newFakeConnectorServer(t *testing.T, private bool) *fakeConnectorServer {
 		}
 		if code := f.sessionCode.Swap(0); code != 0 {
 			w.WriteHeader(int(code))
-			_, _ = io.WriteString(w, `{"error":"session refused"}`)
+			msg := f.sessionMsg
+			if msg == "" {
+				msg = "session refused"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": msg})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": "cn_1", "name": "prod",
@@ -92,6 +101,10 @@ func newFakeConnectorServer(t *testing.T, private bool) *fakeConnectorServer {
 		}
 	})
 	mux.HandleFunc("GET /v1/connector-conns/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if f.connRefused.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		c, err := shareTestUpgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
@@ -100,9 +113,14 @@ func newFakeConnectorServer(t *testing.T, private bool) *fakeConnectorServer {
 	})
 	mux.HandleFunc("POST /v1/connectors", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		_, _ = io.WriteString(w, `{"error":"use the dashboard to manage connectors in a team org"}`)
+		_, _ = io.WriteString(w, `{"error":"`+teamAdminMsg+`"}`)
 	})
 	mux.HandleFunc("POST /v1/sandboxes", func(w http.ResponseWriter, r *http.Request) {
+		if f.createDenied != "" {
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": f.createDenied})
+			return
+		}
 		raw, _ := io.ReadAll(r.Body)
 		f.createBody.Store(string(raw))
 		w.WriteHeader(http.StatusCreated)
@@ -317,6 +335,51 @@ func TestConnectorRunReportsAFailedDial(t *testing.T) {
 	}
 }
 
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func TestConnectorRunReportsAFailedDataSocket(t *testing.T) {
+	target := listenOnce(t)
+	f := newFakeConnectorServer(t, true)
+	f.connRefused.Store(true)
+	var logs syncBuffer
+	targets, err := parseConnectorTargets([]string{"db=127.0.0.1:" + target.port})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := &connectorSession{cl: &Client{Base: f.srv.URL, Key: "k"}, name: "prod", instance: "inst-0123456789abcdef", targets: targets, stderr: &logs}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go cs.run(ctx)
+	f.waitHello(t)
+	id := strings.Repeat("0", 31) + "7"
+	f.send(t, map[string]any{"type": "open", "id": id, "proto": "tcp", "target": "db", "port": target.portInt})
+	if got := f.failReason(t, id); got != "conn" {
+		t.Fatalf("fail reason %q, want conn", got)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(logs.String(), "cannot open the data connection") && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if lines := strings.Count(logs.String(), "cannot open the data connection"); lines != 1 {
+		t.Fatalf("want one log line, got %d in %q", lines, logs.String())
+	}
+}
+
 func TestConnectorRunRejectsBadTargets(t *testing.T) {
 	f := newFakeConnectorServer(t, true)
 	for _, args := range [][]string{{}, {"db=10.0.0.5"}, {"DB=10.0.0.5:5432"}, {"db=10.0.0.5:0"}, {"db=:5432"},
@@ -469,8 +532,22 @@ func TestConnectorRunStopsPromptlyDuringTheSessionCall(t *testing.T) {
 func TestConnectorAdminRefusalSaysWhoMay(t *testing.T) {
 	f := newFakeConnectorServer(t, true)
 	code, _, errS := authedCLI(t, f.srv, "connector", "create", "prod")
-	if code != ExitAPI || !strings.Contains(errS, "use the dashboard to manage connectors") || !strings.Contains(errS, "owners and admins") || strings.Contains(errS, "plan/limit") {
+	if code != ExitAPI || !strings.Contains(errS, "owner or admin of this team") || !strings.Contains(errS, "owners and admins") || strings.Contains(errS, "plan/limit") {
 		t.Fatalf("%d %s", code, errS)
+	}
+}
+
+func TestSandboxCreateGrantHintOnlyForTeamRefusals(t *testing.T) {
+	f := newFakeConnectorServer(t, true)
+	f.createDenied = teamAdminMsg
+	code, _, errS := authedCLI(t, f.srv, "sandbox", "create", "--grant", "prod/db")
+	if code != ExitAPI || !strings.Contains(errS, "owners and admins") {
+		t.Fatalf("team refusal: %d %s", code, errS)
+	}
+	f.createDenied = "sandbox limit reached"
+	code, _, errS = authedCLI(t, f.srv, "sandbox", "create", "--grant", "prod/db")
+	if code != ExitAPI || strings.Contains(errS, "owners and admins") || !strings.Contains(errS, "plan/limit") {
+		t.Fatalf("plan-limit refusal: %d %s", code, errS)
 	}
 }
 
@@ -490,10 +567,19 @@ func TestConnectorRunRetriesATunnel503AndStopsOnA410(t *testing.T) {
 
 func TestConnectorRunNamesTheConnectorKeyWhenTheLoginIsRefused(t *testing.T) {
 	f := newFakeConnectorServer(t, true)
+	f.sessionMsg = teamAdminMsg
 	f.sessionCode.Store(http.StatusForbidden)
 	code, _, errS := authedCLI(t, f.srv, "connector", "run", "prod", "db=10.0.0.5:5432")
-	if code != ExitAPI || !strings.Contains(errS, "session refused") || !strings.Contains(errS, "owners and admins") || !strings.Contains(errS, "PILLDROPS_CONNECTOR_KEY") {
+	if code != ExitAPI || !strings.Contains(errS, "owner or admin of this team") || !strings.Contains(errS, "owners and admins") || !strings.Contains(errS, "PILLDROPS_CONNECTOR_KEY") {
 		t.Fatalf("%d %s", code, errS)
+	}
+
+	// A 403 that is not the team refusal gets no owners-and-admins hint.
+	t.Setenv("PILLDROPS_CONNECTOR_KEY", "")
+	f = newFakeConnectorServer(t, true)
+	f.sessionCode.Store(http.StatusForbidden)
+	if _, _, errS := authedCLI(t, f.srv, "connector", "run", "prod", "db=10.0.0.5:5432"); !strings.Contains(errS, "session refused") || strings.Contains(errS, "owners and admins") {
+		t.Fatalf("plan-limit 403: %s", errS)
 	}
 
 	// A connector key refused for another name gets the message alone.
