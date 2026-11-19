@@ -217,6 +217,10 @@
         },
         "type": "array"
       },
+      "idle_timeout": {
+        "description": "seconds without an invoke before the last replica stops; 0 keeps one warm",
+        "type": "integer"
+      },
       "max_replicas": {
         "description": "burst ceiling",
         "type": "integer"
@@ -231,6 +235,14 @@
       },
       "port": {
         "description": "port the command listens on",
+        "type": "integer"
+      },
+      "public": {
+        "description": "invokable without a key at /v1/public/functions/{public_id}/invoke",
+        "type": "boolean"
+      },
+      "replica_concurrency": {
+        "description": "requests one replica serves at once, 1 to 100",
         "type": "integer"
       },
       "start": {
@@ -774,6 +786,18 @@
     ],
     "type": "object"
   },
+  "list_function_deployments": {
+    "properties": {
+      "name": {
+        "description": "function name",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "type": "object"
+  },
   "list_functions": {
     "properties": {},
     "type": "object"
@@ -942,6 +966,23 @@
     ],
     "type": "object"
   },
+  "rename_function": {
+    "properties": {
+      "function": {
+        "description": "current function name",
+        "type": "string"
+      },
+      "name": {
+        "description": "new function name",
+        "type": "string"
+      }
+    },
+    "required": [
+      "function",
+      "name"
+    ],
+    "type": "object"
+  },
   "renew_sandbox": {
     "properties": {
       "sandbox_id": {
@@ -992,6 +1033,23 @@
     },
     "required": [
       "sandbox_id"
+    ],
+    "type": "object"
+  },
+  "rollback_function": {
+    "properties": {
+      "deployment": {
+        "description": "deployment id from list_function_deployments",
+        "type": "string"
+      },
+      "name": {
+        "description": "function name",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name",
+      "deployment"
     ],
     "type": "object"
   },
@@ -1242,6 +1300,79 @@
     "required": [
       "id",
       "enabled"
+    ],
+    "type": "object"
+  },
+  "update_function": {
+    "properties": {
+      "env": {
+        "description": "environment variables by name; {} clears them",
+        "type": "object"
+      },
+      "files": {
+        "description": "source files to include",
+        "items": {
+          "properties": {
+            "content": {
+              "description": "file text",
+              "type": "string"
+            },
+            "path": {
+              "description": "path in the function",
+              "type": "string"
+            }
+          },
+          "required": [
+            "path",
+            "content"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "idle_timeout": {
+        "description": "seconds without an invoke before the last replica stops; 0 keeps one warm",
+        "type": "integer"
+      },
+      "max_replicas": {
+        "description": "burst ceiling",
+        "type": "integer"
+      },
+      "memory_mb": {
+        "description": "memory in MB",
+        "type": "integer"
+      },
+      "name": {
+        "description": "function name",
+        "type": "string"
+      },
+      "port": {
+        "description": "port the command listens on",
+        "type": "integer"
+      },
+      "public": {
+        "description": "invokable without a key",
+        "type": "boolean"
+      },
+      "replica_concurrency": {
+        "description": "requests one replica serves at once, 1 to 100",
+        "type": "integer"
+      },
+      "start": {
+        "description": "command that serves the function",
+        "type": "string"
+      },
+      "template": {
+        "description": "template id",
+        "type": "string"
+      },
+      "vcpu": {
+        "description": "vCPUs",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "name"
     ],
     "type": "object"
   },

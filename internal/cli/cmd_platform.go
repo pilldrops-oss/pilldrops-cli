@@ -93,7 +93,18 @@ func webhookVerbs() []apiVerb {
 func functionVerbs() []apiVerb {
 	return []apiVerb{
 		{sub: "list", method: "GET", path: "/v1/functions", rows: "functions", cols: []string{"name", "template", "start", "port", "replicas", "invokes"}},
-		{sub: "create", args: "<name> --start CMD [--template T] [--port N] [--vcpu N] [--mem MB] [--max-replicas N] [--env K=V ...] [--file local[:remote] ...]", method: "POST", path: "/v1/functions", flags: functionCreateFlags},
+		{sub: "create", args: "<name> --start CMD [--template T] [--port N] [--vcpu N] [--mem MB] [--max-replicas N] [--replica-concurrency N] [--idle-timeout SECS] [--public] [--env K=V ...] [--file local[:remote] ...]", method: "POST", path: "/v1/functions", flags: functionCreateFlags},
+		{sub: "update", args: "<name> [--start CMD] [--port N] [--vcpu N] [--mem MB] [--max-replicas N] [--replica-concurrency N] [--idle-timeout SECS] [--public|--private] [--env K=V ...] [--file local[:remote] ...]", method: "PUT", path: "/v1/functions/%s", flags: functionUpdateFlags},
+		{sub: "rename", args: "<name> <new-name>", method: "POST", path: "/v1/functions/%s/rename", flags: func(*flag.FlagSet) func(*verbCall) error {
+			return func(v *verbCall) error {
+				v.body = map[string]any{"name": v.pos[1]}
+				return nil
+			}
+		}, text: func(v *verbCall, _ map[string]any) {
+			fmt.Fprintf(v.c.stdout, "renamed %s to %s; the old invoke URL keeps working for 7 days\n", v.pos[0], v.pos[1])
+		}},
+		{sub: "deployments", args: "<name>", method: "GET", path: "/v1/functions/%s/deployments", rows: "deployments", cols: []string{"id", "at", "by", "files", "bytes", "rollback_of"}},
+		{sub: "rollback", args: "<name> <deployment>", method: "POST", path: "/v1/functions/%s/deployments/%s/rollback"},
 		{sub: "get", args: "<name>", method: "GET", path: "/v1/functions/%s"},
 		{sub: "code", args: "<name>", method: "GET", path: "/v1/functions/%s/code", rows: "files", text: func(v *verbCall, obj map[string]any) {
 			files, _ := obj["files"].([]any)
@@ -120,6 +131,9 @@ func functionCreateFlags(fs *flag.FlagSet) func(*verbCall) error {
 	vcpu := fs.Int("vcpu", 0, "vCPUs (0 = template default)")
 	mem := fs.Int("mem", 0, "memory MB (0 = template default)")
 	replicas := fs.Int("max-replicas", 0, "burst ceiling (0 = default)")
+	perReplica := fs.Int("replica-concurrency", 0, "requests one replica serves at once, 1 to 100 (0 = default)")
+	idle := fs.Int("idle-timeout", 0, "seconds without an invoke before the last replica stops (0 = keep one warm)")
+	public := fs.Bool("public", false, "invokable without a key at /v1/public/functions/{public_id}/invoke")
 	var env, files stringList
 	fs.Var(&env, "env", "environment variable KEY=VAL, repeatable")
 	fs.Var(&files, "file", "local file to include as local[:remote], repeatable")
@@ -138,8 +152,71 @@ func functionCreateFlags(fs *flag.FlagSet) func(*verbCall) error {
 		}
 		v.body = map[string]any{
 			"name": v.pos[0], "template": *template, "start": *start, "port": *port,
-			"vcpu": *vcpu, "memory_mb": *mem, "max_replicas": *replicas, "env": vars, "files": specs,
+			"vcpu": *vcpu, "memory_mb": *mem, "max_replicas": *replicas, "replica_concurrency": *perReplica,
+			"idle_timeout": *idle, "public": *public, "env": vars, "files": specs,
 		}
+		return nil
+	}
+}
+
+// functionUpdateFlags sends only the flags given: the server keeps every field left out.
+func functionUpdateFlags(fs *flag.FlagSet) func(*verbCall) error {
+	start := fs.String("start", "", "command that serves the function")
+	// Keyed by flag name; each sets the body field beside it.
+	ints := map[string]struct {
+		field string
+		v     *int
+	}{
+		"port":                {"port", fs.Int("port", 0, "port the command listens on")},
+		"vcpu":                {"vcpu", fs.Int("vcpu", 0, "vCPUs")},
+		"mem":                 {"memory_mb", fs.Int("mem", 0, "memory MB")},
+		"max-replicas":        {"max_replicas", fs.Int("max-replicas", 0, "burst ceiling")},
+		"replica-concurrency": {"replica_concurrency", fs.Int("replica-concurrency", 0, "requests one replica serves at once, 1 to 100")},
+		"idle-timeout":        {"idle_timeout", fs.Int("idle-timeout", 0, "seconds without an invoke before the last replica stops; 0 keeps one warm")},
+	}
+	public := fs.Bool("public", false, "make it invokable without a key")
+	private := fs.Bool("private", false, "turn key-less invoke off; turning it on again gives a new URL")
+	var env, files stringList
+	fs.Var(&env, "env", "environment variable KEY=VAL, repeatable; replaces the stored set")
+	fs.Var(&files, "file", "local file to deploy as local[:remote], repeatable")
+	return func(v *verbCall) error {
+		body := map[string]any{}
+		if flagWasSet(fs, "start") {
+			body["start"] = *start
+		}
+		for name, f := range ints {
+			if flagWasSet(fs, name) {
+				body[f.field] = *f.v
+			}
+		}
+		if *public && *private {
+			return fmt.Errorf("give at most one of --public and --private")
+		}
+		if *public || *private {
+			body["public"] = *public
+		}
+		if len(env) > 0 {
+			vars, err := envMap(env)
+			if err != nil {
+				return err
+			}
+			body["env"] = vars
+		}
+		if len(files) > 0 {
+			specs := []map[string]string{}
+			for _, f := range files {
+				spec, err := readFileSpec(f)
+				if err != nil {
+					return err
+				}
+				specs = append(specs, spec)
+			}
+			body["files"] = specs
+		}
+		if len(body) == 0 {
+			return fmt.Errorf("nothing to change: pass at least one flag")
+		}
+		v.body = body
 		return nil
 	}
 }
