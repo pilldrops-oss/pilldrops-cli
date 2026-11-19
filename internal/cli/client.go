@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -45,12 +46,16 @@ func (c *Client) http() *http.Client {
 // Raw performs a request and returns the response body. GETs are retried once
 // on transport errors or 5xx (idempotent); writes are never retried.
 func (c *Client) Raw(method, path string, body []byte, contentType string) ([]byte, error) {
+	return c.raw(context.Background(), method, path, body, contentType)
+}
+
+func (c *Client) raw(ctx context.Context, method, path string, body []byte, contentType string) ([]byte, error) {
 	attempt := func() ([]byte, int, error) {
 		var rd io.Reader
 		if body != nil {
 			rd = bytes.NewReader(body)
 		}
-		req, err := http.NewRequest(method, c.Base+path, rd)
+		req, err := http.NewRequestWithContext(ctx, method, c.Base+path, rd)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -122,6 +127,11 @@ func (c *Client) Stream(path string) (io.ReadCloser, error) {
 // JSON performs a request with a JSON body (in may be nil) and decodes the
 // JSON response into out (out may be nil).
 func (c *Client) JSON(method, path string, in, out any) error {
+	return c.JSONContext(context.Background(), method, path, in, out)
+}
+
+// JSONContext is JSON that gives up when ctx is cancelled.
+func (c *Client) JSONContext(ctx context.Context, method, path string, in, out any) error {
 	var body []byte
 	ctype := ""
 	if in != nil {
@@ -131,7 +141,7 @@ func (c *Client) JSON(method, path string, in, out any) error {
 		}
 		ctype = "application/json"
 	}
-	b, err := c.Raw(method, path, body, ctype)
+	b, err := c.raw(ctx, method, path, body, ctype)
 	if err != nil {
 		return err
 	}

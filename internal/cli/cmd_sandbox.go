@@ -39,7 +39,7 @@ var knownSandboxSub = map[string]bool{
 	"create": true, "ls": true, "get": true, "open": true,
 	"rm": true, "pause": true, "resume": true,
 	"expose": true, "forwards": true, "unexpose": true,
-	"fork": true, "share": true, "unshare": true,
+	"fork": true, "share": true, "unshare": true, "grant": true, "revoke": true,
 	"ports": true, "set-port": true, "rename": true, "networks": true,
 	"standby": true, "refresh": true, "integrations": true,
 	// hibernate is pause under the name the other tool gives the same act —
@@ -53,7 +53,7 @@ var knownSandboxSub = map[string]bool{
 
 // sandboxSubUsage is the full subcommand list, in the order the top-level help
 // introduces them. Keep it in step with knownSandboxSub above.
-const sandboxSubUsage = "create|ls|get|open|rename|rm|pause|hibernate|standby|resume|refresh|fork|share|unshare|ports|set-port|set-timeout|set-idle|set-hibernate|expose|forwards|unexpose|networks|integrations"
+const sandboxSubUsage = "create|ls|get|open|rename|rm|pause|hibernate|standby|resume|refresh|fork|share|unshare|grant|revoke|ports|set-port|set-timeout|set-idle|set-hibernate|expose|forwards|unexpose|networks|integrations"
 
 // sandboxVisibility flips a sandbox between private and org-visible. Sharing
 // removes the agent logins inside it first and prints what went; unsharing
@@ -173,8 +173,19 @@ func cmdSandbox(c *cmdCtx, args []string) int {
 		fs.Var(&env, "env", "environment variable KEY=VAL, repeatable")
 		var volumes stringList
 		fs.Var(&volumes, "volume", "attach a volume as <id>:<path>, repeatable (`pilldrops volume create`)")
+		var grants stringList
+		fs.Var(&grants, "grant", "let it reach a target behind a connector, as <connector>/<target>, repeatable")
 		if err := fs.Parse(subArgs); err != nil {
 			return ExitUsage
+		}
+		privateTargets := make([]map[string]string, 0, len(grants))
+		for _, g := range grants {
+			conn, target, ok := strings.Cut(g, "/")
+			if !ok || conn == "" || target == "" {
+				fmt.Fprintf(c.stderr, "pilldrops sandbox create: --grant %q is not <connector>/<target>\n", g)
+				return ExitUsage
+			}
+			privateTargets = append(privateTargets, map[string]string{"connector": conn, "target": target})
 		}
 		if *snapshot != "" {
 			if err := c.requireFeature(controlPlaneFeature); err != nil {
@@ -227,6 +238,9 @@ func cmdSandbox(c *cmdCtx, args []string) int {
 		if len(mounts) > 0 {
 			req["volumes"] = mounts
 		}
+		if len(privateTargets) > 0 {
+			req["private"] = privateTargets
+		}
 		if *public {
 			req["public"] = true // opt-in: preview URL reachable without a token
 		}
@@ -244,6 +258,9 @@ func cmdSandbox(c *cmdCtx, args []string) int {
 		}
 		var out map[string]any
 		if err := cl.JSON("POST", "/v1/sandboxes", req, &out); err != nil {
+			if len(privateTargets) > 0 {
+				err = adminOnly(err)
+			}
 			return c.fail(err)
 		}
 		if c.jsonOut {
@@ -366,14 +383,18 @@ func cmdSandbox(c *cmdCtx, args []string) int {
 	case "share", "unshare":
 		return sandboxVisibility(c, cl, sub, subArgs)
 
+	case "grant", "revoke":
+		return sandboxPrivateGrant(c, cl, sub, subArgs)
+
 	case "fork":
 		fs := flag.NewFlagSet("fork", flag.ContinueOnError)
 		fs.SetOutput(c.stderr)
 		name := fs.String("name", "", "label for the copy")
 		timeout := fs.Int("timeout", 0, "lifetime seconds (0 = node default, -1 = persistent)")
 		shared := fs.Bool("shared", false, "make the copy visible to the whole org; default private to you")
+		keepPrivate := fs.Bool("keep-private", false, "grant the copy the parent's private-network targets")
 		if err := fs.Parse(subArgs); err != nil || fs.NArg() != 1 {
-			fmt.Fprintln(c.stderr, "usage: pilldrops sandbox fork [--name <label>] [--timeout <s>] [--shared] <id>")
+			fmt.Fprintln(c.stderr, "usage: pilldrops sandbox fork [--name <label>] [--timeout <s>] [--shared] [--keep-private] <id>")
 			return ExitUsage
 		}
 		req := map[string]any{"name": *name, "timeout": *timeout}
@@ -389,6 +410,9 @@ func cmdSandbox(c *cmdCtx, args []string) int {
 			printJSON(c.stdout, out)
 		} else {
 			fmt.Fprintf(c.stdout, "%s\t%s\t%s\n", str(out["id"]), sandboxState(out), str(out["visibility"]))
+		}
+		if *keepPrivate {
+			return copyPrivateGrants(c, cl, fs.Arg(0), str(out["id"]))
 		}
 		return ExitOK
 

@@ -77,7 +77,8 @@ func TestToolsListHasFullCatalog(t *testing.T) {
 		"restore_sandbox", "delete_saved_state", "set_backup_schedule", "save_snapshot",
 		"list_snapshots", "delete_snapshot", "standby_sandbox", "renew_sandbox", "list_files",
 		"list_secrets", "put_secret", "delete_secret", "forward_port", "list_port_forwards",
-		"remove_port_forward", "add_domain", "list_domains", "remove_domain"} {
+		"remove_port_forward", "add_domain", "list_domains", "remove_domain",
+		"list_connectors", "grant_private_target", "revoke_private_target"} {
 		if !names[must] {
 			t.Fatalf("missing tool %s", must)
 		}
