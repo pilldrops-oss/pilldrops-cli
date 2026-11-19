@@ -753,6 +753,28 @@
     "properties": {},
     "type": "object"
   },
+  "grant_private_target": {
+    "properties": {
+      "connector": {
+        "description": "Connector name.",
+        "type": "string"
+      },
+      "sandbox_id": {
+        "description": "The sandbox id.",
+        "type": "string"
+      },
+      "target": {
+        "description": "Target name the connector announced.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "sandbox_id",
+      "connector",
+      "target"
+    ],
+    "type": "object"
+  },
   "list_audit_log": {
     "properties": {
       "limit": {
@@ -760,6 +782,10 @@
         "type": "integer"
       }
     },
+    "type": "object"
+  },
+  "list_connectors": {
+    "properties": {},
     "type": "object"
   },
   "list_cron_jobs": {
@@ -1033,6 +1059,28 @@
     },
     "required": [
       "sandbox_id"
+    ],
+    "type": "object"
+  },
+  "revoke_private_target": {
+    "properties": {
+      "connector": {
+        "description": "Connector name.",
+        "type": "string"
+      },
+      "sandbox_id": {
+        "description": "The sandbox id.",
+        "type": "string"
+      },
+      "target": {
+        "description": "Target name.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "sandbox_id",
+      "connector",
+      "target"
     ],
     "type": "object"
   },

@@ -103,7 +103,7 @@ func commandTable() []command {
 			name: "sandbox", run: cmdSandbox,
 			subs: []string{"create", "ls", "get", "rm", "pause", "resume", "fork", "open", "ports",
 				"set-port", "rename", "expose", "forwards", "unexpose", "networks", "standby",
-				"refresh", "set-timeout", "set-idle", "set-hibernate", "share", "unshare"},
+				"refresh", "set-timeout", "set-idle", "set-hibernate", "share", "unshare", "grant", "revoke"},
 			optional: []optionalPart{
 				{feature: "volume", help: `sandbox create --volume <id>:<path> (xN)   attach a volume`},
 				{feature: "integrations", sub: "integrations", help: `sandbox integrations <id> [add|rm <server>... [--env K=V ...]]   its MCP servers. The
@@ -113,6 +113,8 @@ func commandTable() []command {
 			help: `sandbox create|ls|get|rm|pause|resume|fork
     create flags: --template --from-snapshot --image --start --port (xN) --env (xN)
                   --vcpu --mem --storage --timeout --idle --slug --networks
+                  --grant <connector>/<target> (xN)
+    fork flags: --name --timeout --shared --keep-private (copy its private-network grants)
 sandbox open <id> [--print] [--port <n>]   open the sandbox's app in a browser; --port opens any port you started a server on (flags in either order)
 sandbox ports <id>     every port the platform probes, which are listening, and an HTTPS link for each
                        (https://<port>-<id>.<domain>/); set-port <id> <port>
@@ -137,6 +139,8 @@ sandbox set-timeout <id> <secs>   hard lifetime from now (-1 = persistent, plan
                        permitting); set-idle <id> <secs> is the standby timer
                        and set-hibernate <id> <secs> the pause-to-disk one
                        (-1 = never, 0 = platform default)
+sandbox grant|revoke <id> <connector>/<target>   let it reach, or stop it reaching,
+                       a target behind a connector as <target>.private
 sandbox share|unshare <id>    org-visible or private; share wipes the agent
                        logins inside first, and unshare does not restore them
                        (a public link to an app on this machine: pilldrops share <port>)
@@ -171,6 +175,17 @@ sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
                        Ctrl-C. Anyone with the link can open it. Not the same as
                        sandbox share <id>, which sets a sandbox's visibility`,
 			example: `pilldrops --json version`, // it runs until stopped, so the sweep cannot hold it
+		},
+		{
+			name: "connector", run: cmdConnector, humanOnly: true,
+			subs: []string{"create", "run", "list", "logs", "key", "rm"},
+			help: `connector create <name> | run <name> NAME=HOST:PORT... | list | logs <name>
+                       | key create|list|rm <name> [key-id] | rm <name>
+                       let sandboxes you grant reach hosts on your network. run stays
+                       connected until Ctrl-C and dials only the targets it names; on
+                       a server set PILLDROPS_CONNECTOR_KEY to a connector key (--key
+                       also works, but shows in ps and shell history)`,
+			example: `pilldrops --json version`, // run holds the terminal, so the sweep cannot use it
 		},
 		{
 			name: "shell", run: cmdShell, humanOnly: true,
