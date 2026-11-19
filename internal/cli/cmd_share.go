@@ -139,6 +139,7 @@ type shareSession struct {
 	token      string
 	stderr     io.Writer
 	backoffMin time.Duration
+	readWait   time.Duration // 0 means sharePongWait
 
 	connected bool // a control channel has been up before, so the next one is a reconnect
 
@@ -221,9 +222,13 @@ func (s *shareSession) connect(ctx context.Context) (string, error) {
 		fmt.Fprintln(s.stderr, "tunnel reconnected")
 	}
 	s.connected = true
-	_ = ctrl.SetReadDeadline(time.Now().Add(sharePongWait))
+	readWait := s.readWait
+	if readWait == 0 {
+		readWait = sharePongWait
+	}
+	_ = ctrl.SetReadDeadline(time.Now().Add(readWait))
 	ctrl.SetPingHandler(func(data string) error {
-		_ = ctrl.SetReadDeadline(time.Now().Add(sharePongWait))
+		_ = ctrl.SetReadDeadline(time.Now().Add(readWait))
 		return ctrl.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(5*time.Second))
 	})
 	for {
@@ -235,6 +240,9 @@ func (s *shareSession) connect(ctx context.Context) (string, error) {
 		if err := ctrl.ReadJSON(&msg); err != nil {
 			return "", err
 		}
+		// Any message proves the server is there: a proxy in between may answer
+		// its pings itself, so the server's keepalive may be all that arrives.
+		_ = ctrl.SetReadDeadline(time.Now().Add(readWait))
 		switch msg.Type {
 		case "closed":
 			return msg.Reason, nil

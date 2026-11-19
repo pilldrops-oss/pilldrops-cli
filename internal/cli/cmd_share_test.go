@@ -388,3 +388,31 @@ func TestShareCommandExitsNonZeroWhenTheServerEndsTheLink(t *testing.T) {
 		t.Fatal("the command kept running")
 	}
 }
+
+// A proxy in front of the server may answer its pings itself, so keepalive
+// messages alone must keep the control socket up.
+func TestShareStaysUpOnKeepalivesAlone(t *testing.T) {
+	f := newFakeShareServer(t, true)
+	l := listen(t, "tcp", "127.0.0.1:0")
+	ss := &shareSession{
+		cl: &Client{Base: f.srv.URL, Key: "k"}, id: "sh_1", port: portOf(l), stderr: io.Discard,
+		tunnelURL: "ws" + strings.TrimPrefix(f.srv.URL, "http") + "/tunnel", token: "tok",
+		backoffMin: 5 * time.Millisecond, readWait: 300 * time.Millisecond,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go ss.run(ctx)
+	ctrl := f.control(t)
+	for range 10 {
+		f.mu.Lock()
+		err := ctrl.WriteJSON(map[string]any{"type": "keepalive"})
+		f.mu.Unlock()
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if n := f.ctrlCount.Load(); n != 1 {
+		t.Fatalf("connected %d times, want no reconnect while keepalives arrive", n)
+	}
+}
