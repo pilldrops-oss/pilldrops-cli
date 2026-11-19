@@ -320,7 +320,7 @@ func cmdConnectorRun(c *cmdCtx, args []string) int {
 	cs := &connectorSession{cl: cl, name: name, instance: "inst-" + hex.EncodeToString(b), targets: targets, stderr: c.stderr}
 	if reason := cs.run(ctx); reason != "" {
 		cs.logf("the connector has stopped: %s\n", reason)
-		if cs.refused == http.StatusForbidden && key == "" {
+		if cs.teamRefused && key == "" {
 			cs.logf("  hint: in a team org only owners and admins can run a connector with their own login; " +
 				"anyone can run it with a connector key from the dashboard in PILLDROPS_CONNECTOR_KEY\n")
 		}
@@ -338,7 +338,7 @@ type connectorSession struct {
 	connected      bool
 	maxConns       int           // 0 means connectorMaxConns
 	readWait       time.Duration // 0 means sharePongWait
-	refused        int           // the HTTP status that stopped the run, if one did
+	teamRefused    bool          // the session was refused because the login is not a team owner or admin
 
 	logMu sync.Mutex // connections log from their own goroutines
 
@@ -370,7 +370,7 @@ func (s *connectorSession) run(ctx context.Context) string {
 		err := s.cl.JSONContext(ctx, "POST", "/v1/connectors/session", map[string]any{"name": s.name}, &info)
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && sessionRefused(apiErr.Status) {
-			s.refused = apiErr.Status
+			s.teamRefused = teamAdminRefusal(apiErr)
 			return apiErr.Msg
 		}
 		if err == nil {
@@ -629,11 +629,18 @@ func copyPrivateGrants(c *cmdCtx, cl *Client, parent, child string) int {
 	return ExitOK
 }
 
+// teamAdminRefusal reports a 403 that is the server's team-admin refusal, not
+// a plan limit or another forbidden.
+func teamAdminRefusal(apiErr *APIError) bool {
+	return apiErr.Status == http.StatusForbidden &&
+		strings.Contains(strings.ToLower(apiErr.Msg+" "+apiErr.Code), "owner or admin of this team")
+}
+
 // adminOnly replaces the generic 403 remedy, which points at plan limits, for
 // the routes a team org keeps to its owners and admins.
 func adminOnly(err error) error {
 	var apiErr *APIError
-	if errors.As(err, &apiErr) && apiErr.Status == http.StatusForbidden {
+	if errors.As(err, &apiErr) && teamAdminRefusal(apiErr) {
 		return pathError{err: err, hint: "in a team org only owners and admins can manage connectors and grants, from the dashboard"}
 	}
 	return err
