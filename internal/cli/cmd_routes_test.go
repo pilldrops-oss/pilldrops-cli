@@ -68,6 +68,10 @@ var customerRoutes = []struct {
 	{"GET /v1/functions/{name}/logs", []string{"function", "logs", "fn"}},
 	{"GET /v1/functions/{name}/metrics", []string{"function", "metrics", "fn"}},
 	{"DELETE /v1/functions/{name}", []string{"function", "rm", "fn", "--confirm"}},
+	{"PUT /v1/functions/{name}", []string{"function", "update", "fn", "--idle-timeout", "300"}},
+	{"POST /v1/functions/{name}/rename", []string{"function", "rename", "fn", "fn2"}},
+	{"GET /v1/functions/{name}/deployments", []string{"function", "deployments", "fn"}},
+	{"POST /v1/functions/{name}/deployments/{deployment}/rollback", []string{"function", "rollback", "fn", "dep_1"}},
 
 	{"GET /v1/projects", []string{"project", "list"}},
 	{"POST /v1/projects", []string{"project", "create", "p"}},
@@ -100,7 +104,6 @@ var customerRoutes = []struct {
 	{"GET /v1/sandboxes/{id}/agent/responses/{response}", nil},
 	{"GET /v1/sandboxes/{id}/agent/responses/{response}/stream", nil},
 	{"POST /v1/sandboxes/{id}/agent/responses/{response}/cancel", nil},
-	{"PUT /v1/functions/{name}", nil},
 	{"PATCH /v1/projects/{id}", nil},
 	{"PATCH /v1/projects/{id}/runs/{runID}", nil},
 	{"PATCH /v1/threads/{id}", nil},
@@ -121,7 +124,6 @@ var skippedRoutes = map[string]string{
 	"GET /v1/sandboxes/{id}/agent/responses/{response}":         "OpenAI-compatible adapter",
 	"GET /v1/sandboxes/{id}/agent/responses/{response}/stream":  "OpenAI-compatible adapter",
 	"POST /v1/sandboxes/{id}/agent/responses/{response}/cancel": "OpenAI-compatible adapter",
-	"PUT /v1/functions/{name}":                                  "reachable through api",
 	"PATCH /v1/projects/{id}":                                   "reachable through api",
 	"PATCH /v1/projects/{id}/runs/{runID}":                      "reachable through api",
 	"PATCH /v1/threads/{id}":                                    "reachable through api: an opaque transcript store",
@@ -275,5 +277,43 @@ func TestVerbsKeepTheErrorContract(t *testing.T) {
 	}
 	if code, _, _ := runCLI(t, srv.URL, "agent", "status"); code != ExitUsage {
 		t.Fatalf("missing id = %d, want usage without a terminal", code)
+	}
+}
+
+// An update sends only what was asked for: the server keeps every field left out.
+func TestFunctionUpdateSendsOnlyTheFlagsGiven(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--idle-timeout", "0", "--private"}, `{"idle_timeout":0,"public":false}`},
+		{[]string{"--public"}, `{"public":true}`},
+		{[]string{"--replica-concurrency", "8", "--env", "A=1"}, `{"env":{"A":"1"},"replica_concurrency":8}`},
+	} {
+		var got string
+		mux := http.NewServeMux()
+		mux.HandleFunc("PUT /v1/functions/{name}", func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			b, _ := json.Marshal(body)
+			got = string(b)
+			_, _ = w.Write([]byte(`{"status":"updated"}`))
+		})
+		srv := httptest.NewServer(mux)
+		if code, _, errS := authedCLI(t, srv, append([]string{"function", "update", "fn"}, tc.args...)...); code != ExitOK {
+			t.Fatalf("%v: exit %d %s", tc.args, code, errS)
+		}
+		srv.Close()
+		if got != tc.want {
+			t.Errorf("%v sent %s, want %s", tc.args, got, tc.want)
+		}
+	}
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+	if code, _, _ := authedCLI(t, srv, "function", "update", "fn", "--public", "--private"); code == ExitOK {
+		t.Error("--public with --private was accepted")
+	}
+	if code, _, _ := authedCLI(t, srv, "function", "update", "fn"); code == ExitOK {
+		t.Error("an update with nothing to change was sent")
 	}
 }

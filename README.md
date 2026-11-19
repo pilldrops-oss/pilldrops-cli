@@ -80,6 +80,9 @@ pilldrops agent token create <id> --scope agent:read --ttl 3600
 pilldrops cron create <id> '0 3 * * *' 'make backup' --name nightly
 pilldrops webhook add https://example.com/hook --event sandbox.created --event sandbox.ended
 pilldrops function create hello --start 'python3 main.py' --port 8000 --file main.py
+pilldrops function update hello --idle-timeout 300 --public   # only the flags given change
+pilldrops function deployments hello && pilldrops function rollback hello <deployment-id>
+pilldrops function rename hello greet   # the old invoke URL keeps working for 7 days
 pilldrops project list
 pilldrops thread list
 pilldrops sandbox integrations <id> add github --env GITHUB_PERSONAL_ACCESS_TOKEN=...
