@@ -3,10 +3,12 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 const teamAdminMsg = "only an owner or admin of this team can change connectors and grants; sign in to the dashboard to do it"
@@ -26,6 +29,7 @@ type fakeConnectorServer struct {
 	ctrl         *websocket.Conn
 	hello        string
 	fails        chan string
+	dnsAnswers   chan map[string]any
 	dataConns    chan *websocket.Conn
 	sessionAuth  atomic.Value
 	parentGrants string
@@ -42,7 +46,7 @@ type fakeConnectorServer struct {
 
 func newFakeConnectorServer(t *testing.T, private bool) *fakeConnectorServer {
 	t.Helper()
-	f := &fakeConnectorServer{fails: make(chan string, 8), dataConns: make(chan *websocket.Conn, 8), parentGrants: `[]`}
+	f := &fakeConnectorServer{fails: make(chan string, 8), dnsAnswers: make(chan map[string]any, 8), dataConns: make(chan *websocket.Conn, 8), parentGrants: `[]`}
 	ws := func() string { return "ws" + strings.TrimPrefix(f.srv.URL, "http") }
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/capabilities", func(w http.ResponseWriter, _ *http.Request) {
@@ -97,6 +101,9 @@ func newFakeConnectorServer(t *testing.T, private bool) *fakeConnectorServer {
 			}
 			if msg["type"] == "fail" {
 				f.fails <- str(msg["id"]) + " " + str(msg["reason"])
+			}
+			if msg["type"] == "dns_answer" {
+				f.dnsAnswers <- msg
 			}
 		}
 	})
@@ -175,12 +182,30 @@ func (f *fakeConnectorServer) waitHello(t *testing.T) string {
 
 var openSeq atomic.Int32
 
-// open asks the connector for a connection and reports "ok" when a data socket
-// arrives and echoes, "fail" when the connector refuses it first.
+// open asks the connector for a connection to a named target.
 func (f *fakeConnectorServer) open(t *testing.T, target string, port int) string {
 	t.Helper()
 	id := strings.Repeat("0", 31) + strconv.Itoa(int(openSeq.Add(1))%10)
 	f.send(t, map[string]any{"type": "open", "id": id, "proto": "tcp", "target": target, "port": port})
+	return f.outcome(t, id)
+}
+
+// openDest asks for a connection to dest, as the hub does for a subnet or DNS grant.
+func (f *fakeConnectorServer) openDest(t *testing.T, dest, name string) string {
+	t.Helper()
+	id := strings.Repeat("0", 31) + strconv.Itoa(int(openSeq.Add(1))%10)
+	msg := map[string]any{"type": "open", "id": id, "proto": "tcp", "dest": dest}
+	if name != "" {
+		msg["name"] = name
+	}
+	f.send(t, msg)
+	return f.outcome(t, id)
+}
+
+// outcome reports "ok" when a data socket arrives and echoes, "fail" when the
+// connector refuses the open first.
+func (f *fakeConnectorServer) outcome(t *testing.T, id string) string {
+	t.Helper()
 	select {
 	case c := <-f.dataConns:
 		conn := &wsConn{ws: c}
@@ -200,6 +225,60 @@ func (f *fakeConnectorServer) open(t *testing.T, target string, port int) string
 	case <-time.After(2 * time.Second):
 		return "timeout"
 	}
+}
+
+func (f *fakeConnectorServer) askDNS(t *testing.T, name, qtype string) map[string]any {
+	t.Helper()
+	id := fmt.Sprintf("%032x", openSeq.Add(1))
+	f.send(t, map[string]any{"type": "dns", "id": id, "name": name, "qtype": qtype})
+	select {
+	case m := <-f.dnsAnswers:
+		if m["id"] != id {
+			t.Fatalf("answer for another id: %v", m)
+		}
+		return m
+	case <-time.After(3 * time.Second):
+		t.Fatal("no dns_answer")
+		return nil
+	}
+}
+
+// fakeDNS answers wiki.corp.internal with a CNAME to web.corp.internal and an
+// A record for addr, TTL 60, and anything else with NXDOMAIN.
+func fakeDNS(t *testing.T, addr string) string {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			n, from, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			var m dnsmessage.Message
+			if m.Unpack(buf[:n]) != nil || len(m.Questions) != 1 {
+				continue
+			}
+			q := m.Questions[0]
+			m.Response = true
+			if q.Name.String() == "wiki.corp.internal." {
+				web := dnsmessage.MustNewName("web.corp.internal.")
+				m.Answers = []dnsmessage.Resource{
+					{Header: dnsmessage.ResourceHeader{Name: q.Name, Type: dnsmessage.TypeCNAME, Class: dnsmessage.ClassINET, TTL: 60}, Body: &dnsmessage.CNAMEResource{CNAME: web}},
+					{Header: dnsmessage.ResourceHeader{Name: web, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 60}, Body: &dnsmessage.AResource{A: netip.MustParseAddr(addr).As4()}},
+				}
+			} else {
+				m.RCode = dnsmessage.RCodeNameError
+			}
+			out, _ := m.Pack()
+			_, _ = pc.WriteTo(out, from)
+		}
+	}()
+	return pc.LocalAddr().String()
 }
 
 func (f *fakeConnectorServer) send(t *testing.T, msg map[string]any) {
@@ -243,12 +322,22 @@ func (f *fakeConnectorServer) failReason(t *testing.T, id string) string {
 // runConnector runs a session directly, for limits the command line cannot set.
 func runConnector(t *testing.T, f *fakeConnectorServer, maxConns int, args ...string) {
 	t.Helper()
-	targets, err := parseConnectorTargets(args)
-	if err != nil {
-		t.Fatal(err)
+	runConnectorWith(t, f, func(cs *connectorSession) { cs.maxConns = maxConns }, args...)
+}
+
+// runConnectorWith runs a session directly; set adjusts it first.
+func runConnectorWith(t *testing.T, f *fakeConnectorServer, set func(*connectorSession), args ...string) {
+	t.Helper()
+	var targets []connectorTarget
+	if len(args) > 0 {
+		var err error
+		if targets, err = parseConnectorTargets(args); err != nil {
+			t.Fatal(err)
+		}
 	}
 	cs := &connectorSession{cl: &Client{Base: f.srv.URL, Key: "k"}, name: "prod", instance: "inst-0123456789abcdef",
-		targets: targets, stderr: io.Discard, maxConns: maxConns}
+		targets: targets, stderr: io.Discard, dialLocalAnswers: true}
+	set(cs)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go cs.run(ctx)
@@ -616,5 +705,214 @@ func TestConnectorRunStaysUpOnKeepalivesAlone(t *testing.T) {
 	defer f.mu.Unlock()
 	if f.ctrl != first {
 		t.Fatal("the connector reconnected while keepalives were arriving")
+	}
+}
+
+func TestConnectorRunAnnouncesSubnetsAndSuffixes(t *testing.T) {
+	f := newFakeConnectorServer(t, true)
+	go authedCLI(t, f.srv, "connector", "run", "prod", "--subnet", "10.0.0.0/16", "--dns", "Corp.Internal.")
+	hello := f.waitHello(t)
+	for _, want := range []string{`"subnets":["10.0.0.0/16"]`, `"dns":{"suffixes":["corp.internal"]}`, `"targets":[]`} {
+		if !strings.Contains(hello, want) {
+			t.Errorf("hello missing %s: %s", want, hello)
+		}
+	}
+}
+
+// The dashboard's run hint puts the flags after a target, and flags may come
+// before the name too.
+func TestConnectorRunTakesRouteFlagsAnywhere(t *testing.T) {
+	for _, args := range [][]string{
+		{"prod", "db=10.0.0.5:5432", "--subnet", "10.0.0.0/16", "--dns", "corp.internal"},
+		{"--subnet", "10.0.0.0/16", "prod", "--dns", "corp.internal", "db=10.0.0.5:5432"},
+		{"prod", "--subnet=10.0.0.0/16", "db=10.0.0.5:5432", "--dns=corp.internal", "--key=k"},
+	} {
+		f := newFakeConnectorServer(t, true)
+		go authedCLI(t, f.srv, append([]string{"connector", "run"}, args...)...)
+		hello := f.waitHello(t)
+		for _, want := range []string{`"subnets":["10.0.0.0/16"]`, `"dns":{"suffixes":["corp.internal"]}`, `"targets":[{"name":"db","port":5432}]`} {
+			if !strings.Contains(hello, want) {
+				t.Errorf("%v: hello missing %s: %s", args, want, hello)
+			}
+		}
+		if args[len(args)-1] == "--key=k" && f.sessionAuth.Load() != "Bearer k" {
+			t.Errorf("%v: session auth %v", args, f.sessionAuth.Load())
+		}
+	}
+}
+
+func TestConnectorRunRejectsBadRoutes(t *testing.T) {
+	f := newFakeConnectorServer(t, true)
+	for _, args := range [][]string{{"--subnet", "0.0.0.0/0"}, {"--subnet", "10.0.5.1/24"}, {"--subnet", "fd00::/8"},
+		{"--subnet", "10.0.0.0/7"}, {"--subnet=10.0.5.1/24"}, {"--dns", "internal"}, {"--dns", "x.pd"}, {"--dns", "10.0.0.1"}, {"--subnet"}, {"--dns"}} {
+		if code, _, errS := authedCLI(t, f.srv, append([]string{"connector", "run", "prod"}, args...)...); code != ExitUsage {
+			t.Errorf("%v: code %d %s", args, code, errS)
+		}
+	}
+}
+
+// Whatever the server sends, a dest outside the connector's own --subnet ranges is never dialled.
+func TestConnectorDialsADestOnlyInsideItsOwnSubnets(t *testing.T) {
+	good := listenOnce(t)
+	echoOnce(good.l)
+	f := newFakeConnectorServer(t, true)
+	runConnectorWith(t, f, func(cs *connectorSession) { cs.subnets = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")} })
+	if got := f.openDest(t, "127.0.0.1:"+good.port, ""); got != "ok" {
+		t.Fatalf("inside its subnet: %s", got)
+	}
+	for _, dest := range []string{"10.9.9.9:" + good.port, "127.0.0.1:0", "[::1]:" + good.port, "[::ffff:127.0.0.1]:" + good.port, "nonsense"} {
+		if got := f.openDest(t, dest, ""); got != "fail" {
+			t.Errorf("%s: %s", dest, got)
+		}
+	}
+}
+
+func TestConnectorAnswersDNSAndDialsWhatItAnswered(t *testing.T) {
+	good := listenOnce(t)
+	echoOnce(good.l)
+	f := newFakeConnectorServer(t, true)
+	runConnectorWith(t, f, func(cs *connectorSession) {
+		cs.suffixes, cs.dnsServer = []string{"corp.internal"}, fakeDNS(t, "127.0.0.1")
+	})
+	m := f.askDNS(t, "wiki.corp.internal", "A")
+	answers, _ := m["answers"].([]any)
+	if m["rcode"] != float64(0) || len(answers) != 2 ||
+		answers[0].(map[string]any)["type"] != "CNAME" || answers[0].(map[string]any)["value"] != "web.corp.internal" ||
+		answers[1].(map[string]any)["value"] != "127.0.0.1" || answers[1].(map[string]any)["ttl"] != float64(60) {
+		t.Fatalf("answer %v", m)
+	}
+	if got := f.openDest(t, "127.0.0.1:"+good.port, ""); got != "ok" {
+		t.Fatalf("an address it answered: %s", got)
+	}
+	for _, c := range []struct {
+		name, qtype string
+		rcode       float64
+	}{
+		{"evil.example", "A", 5}, {"wiki.corp.internal", "AAAA", 0}, {"wiki.corp.internal", "MX", 4}, {"nope.corp.internal", "A", 3},
+	} {
+		if m := f.askDNS(t, c.name, c.qtype); m["rcode"] != c.rcode {
+			t.Errorf("%s %s: %v, want rcode %v", c.name, c.qtype, m, c.rcode)
+		}
+	}
+}
+
+// Another instance answered the lookup: the open carries the name, and this
+// one resolves it itself before dialling.
+func TestConnectorResolvesANameItDidNotAnswer(t *testing.T) {
+	good := listenOnce(t)
+	echoOnce(good.l)
+	f := newFakeConnectorServer(t, true)
+	runConnectorWith(t, f, func(cs *connectorSession) {
+		cs.suffixes, cs.dnsServer = []string{"corp.internal"}, fakeDNS(t, "127.0.0.1")
+	})
+	if got := f.openDest(t, "127.0.0.1:"+good.port, "evil.example"); got != "fail" {
+		t.Fatalf("a name outside its suffixes: %s", got)
+	}
+	if got := f.openDest(t, "127.0.0.1:"+good.port, "wiki.corp.internal"); got != "ok" {
+		t.Fatalf("a name it resolves to the dest: %s", got)
+	}
+}
+
+func TestConnectorRefusesAnExpiredAnswerUnlessItResolvesAgain(t *testing.T) {
+	good := listenOnce(t)
+	echoOnce(good.l)
+	f := newFakeConnectorServer(t, true)
+	runConnectorWith(t, f, func(cs *connectorSession) {
+		cs.suffixes, cs.dnsServer = []string{"corp.internal"}, fakeDNS(t, "127.0.0.1")
+		cs.answered = map[netip.Addr]time.Time{netip.MustParseAddr("127.0.0.1"): time.Now().Add(-time.Second)}
+	})
+	if got := f.openDest(t, "127.0.0.1:"+good.port, ""); got != "fail" {
+		t.Fatalf("an expired answer: %s", got)
+	}
+	if got := f.openDest(t, "127.0.0.1:"+good.port, "wiki.corp.internal"); got != "ok" {
+		t.Fatalf("an expired answer with a name that resolves to it: %s", got)
+	}
+}
+
+func TestConnectorRefusesADestItsNameDoesNotResolveTo(t *testing.T) {
+	good := listenOnce(t)
+	f := newFakeConnectorServer(t, true)
+	runConnectorWith(t, f, func(cs *connectorSession) {
+		cs.suffixes, cs.dnsServer = []string{"corp.internal"}, fakeDNS(t, "127.0.0.2")
+	})
+	if got := f.openDest(t, "127.0.0.1:"+good.port, "wiki.corp.internal"); got != "fail" {
+		t.Fatalf("a name that resolves elsewhere: %s", got)
+	}
+}
+
+// A resolver that never answers must not hold up other opens or DNS answers.
+func TestConnectorSlowResolverDoesNotStallTheControlChannel(t *testing.T) {
+	silent, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = silent.Close() })
+	good := listenOnce(t)
+	echoOnce(good.l)
+	f := newFakeConnectorServer(t, true)
+	runConnectorWith(t, f, func(cs *connectorSession) {
+		cs.subnets = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
+		cs.suffixes, cs.dnsServer = []string{"corp.internal"}, silent.LocalAddr().String()
+	})
+	stuck := strings.Repeat("c", 32)
+	f.send(t, map[string]any{"type": "open", "id": stuck, "proto": "tcp", "dest": "10.1.1.1:80", "name": "wiki.corp.internal"})
+	start := time.Now()
+	if m := f.askDNS(t, "evil.example", "A"); m["rcode"] != float64(5) {
+		t.Fatalf("dns answer %v", m)
+	}
+	if got := f.openDest(t, "127.0.0.1:"+good.port, ""); got != "ok" {
+		t.Fatalf("second open: %s", got)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("the control channel waited %s on the resolver", took)
+	}
+	select {
+	case got := <-f.fails:
+		if got != stuck+" not announced" {
+			t.Fatalf("the unresolved open: %s", got)
+		}
+	case <-time.After(4 * time.Second): // past the resolver's 2.5 s deadline
+		t.Fatal("the unresolved open was never failed")
+	}
+}
+
+func TestConnectorKeepsAtMostTheAnsweredLimit(t *testing.T) {
+	cs := &connectorSession{}
+	first := netip.MustParseAddr("10.0.0.0")
+	for i, a := 0, first; i <= connectorMaxAnswered; i, a = i+1, a.Next() {
+		cs.remember(a, 60)
+	}
+	if len(cs.answered) != connectorMaxAnswered || len(cs.answerOrder) != connectorMaxAnswered || cs.answeredRecently(first) {
+		t.Fatalf("kept %d (%d ordered), oldest kept %v", len(cs.answered), len(cs.answerOrder), cs.answeredRecently(first))
+	}
+}
+
+func TestConnectorRunExplainsTheHostPortPlaceholder(t *testing.T) {
+	f := newFakeConnectorServer(t, true)
+	code, _, errS := authedCLI(t, f.srv, "connector", "run", "prod", "db=HOST:PORT", "--subnet", "10.0.0.0/16")
+	if code != ExitUsage || !strings.Contains(errS, "replace HOST:PORT with the target's address") {
+		t.Fatalf("%d %s", code, errS)
+	}
+}
+
+// A record under a suffix pointing at loopback or link-local (instance
+// metadata) is neither answered nor dialled.
+func TestConnectorNeverDialsLoopbackOrLinkLocalAnswers(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1", "169.254.169.254"} {
+		good := listenOnce(t)
+		f := newFakeConnectorServer(t, true)
+		runConnectorWith(t, f, func(cs *connectorSession) {
+			cs.suffixes, cs.dnsServer, cs.dialLocalAnswers = []string{"corp.internal"}, fakeDNS(t, addr), false
+		})
+		m := f.askDNS(t, "wiki.corp.internal", "A")
+		answers, _ := m["answers"].([]any)
+		if m["rcode"] != float64(0) || len(answers) != 1 || answers[0].(map[string]any)["type"] != "CNAME" {
+			t.Errorf("%s: answer %v", addr, m)
+		}
+		for _, name := range []string{"", "wiki.corp.internal"} {
+			if got := f.openDest(t, addr+":"+good.port, name); got != "fail" {
+				t.Errorf("%s with name %q: %s", addr, name, got)
+			}
+		}
 	}
 }

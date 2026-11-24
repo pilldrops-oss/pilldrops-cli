@@ -179,12 +179,14 @@ sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
 		{
 			name: "connector", run: cmdConnector, humanOnly: true,
 			subs: []string{"create", "run", "list", "logs", "key", "rm"},
-			help: `connector create <name> | run <name> NAME=HOST:PORT... | list | logs <name>
+			help: `connector create <name> | run <name> [NAME=HOST:PORT...] [--subnet CIDR]...
+                       [--dns SUFFIX]... | list | logs <name>
                        | key create|list|rm <name> [key-id] | rm <name>
                        let sandboxes you grant reach hosts on your network. run stays
-                       connected until Ctrl-C and dials only the targets it names; on
-                       a server set PILLDROPS_CONNECTOR_KEY to a connector key (--key
-                       also works, but shows in ps and shell history)`,
+                       connected until Ctrl-C and dials only the targets, subnets and
+                       names under the DNS suffixes it names; on a server set
+                       PILLDROPS_CONNECTOR_KEY to a connector key (--key also works,
+                       but shows in ps and shell history)`,
 			example: `pilldrops --json version`, // run holds the terminal, so the sweep cannot use it
 		},
 		{

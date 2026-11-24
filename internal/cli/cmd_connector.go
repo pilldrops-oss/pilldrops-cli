@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -16,15 +17,72 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
-const connectorUsage = `usage: pilldrops connector create <name> | run <name> NAME=HOST:PORT... (key from PILLDROPS_CONNECTOR_KEY) | list | logs <name> | key create|list|rm <name> [key-id] | rm <name>`
+const connectorUsage = `usage: pilldrops connector create <name> | run <name> [NAME=HOST:PORT...] [--subnet CIDR]... [--dns SUFFIX]... (key from PILLDROPS_CONNECTOR_KEY) | list | logs <name> | key create|list|rm <name> [key-id] | rm <name>`
 
 var connectorName = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+const (
+	connectorMaxSubnets  = 20
+	connectorMaxSuffixes = 10
+	// connectorMaxDNS bounds lookups answered at once, whatever the hub sends.
+	connectorMaxDNS = 32
+	// connectorMaxAnswered bounds the DNS-learned addresses kept, as the hub and node do.
+	connectorMaxAnswered = 1024
+	dnsMinTTL            = 30
+	dnsMaxTTL            = 300
+)
+
+// parseConnectorSubnets checks --subnet values as the server does: IPv4, /8 to
+// /32, no host bits.
+func parseConnectorSubnets(args []string) ([]netip.Prefix, error) {
+	if len(args) > connectorMaxSubnets {
+		return nil, fmt.Errorf("at most %d --subnet values", connectorMaxSubnets)
+	}
+	out := make([]netip.Prefix, 0, len(args))
+	for _, a := range args {
+		p, err := netip.ParsePrefix(a)
+		if err != nil || !p.Addr().Is4() || p.Bits() < 8 || p.Masked() != p {
+			return nil, fmt.Errorf("--subnet %q: want an IPv4 CIDR from /8 to /32 with no host bits, like 10.0.0.0/16", a)
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// parseConnectorSuffixes checks --dns values: two or more lowercase labels,
+// not an IP address, outside the sandbox-internal zones.
+func parseConnectorSuffixes(args []string) ([]string, error) {
+	if len(args) > connectorMaxSuffixes {
+		return nil, fmt.Errorf("at most %d --dns values", connectorMaxSuffixes)
+	}
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		d := strings.TrimSuffix(strings.ToLower(a), ".")
+		labels := strings.Split(d, ".")
+		_, ipErr := netip.ParseAddr(d)
+		ok := len(labels) >= 2 && ipErr != nil
+		for _, l := range labels {
+			ok = ok && connectorName.MatchString(l)
+		}
+		switch labels[len(labels)-1] {
+		case "pd", "private", "localhost":
+			ok = false
+		}
+		if !ok {
+			return nil, fmt.Errorf("--dns %q: want a DNS suffix like corp.internal", a)
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
 
 type connectorTarget struct {
 	Name string `json:"name"`
@@ -35,7 +93,7 @@ type connectorTarget struct {
 
 func parseConnectorTargets(args []string) ([]connectorTarget, error) {
 	if len(args) == 0 {
-		return nil, errors.New("name at least one target, like db=10.0.0.5:5432")
+		return nil, errors.New("name at least one target like db=10.0.0.5:5432, or a --subnet or --dns")
 	}
 	seen := map[string]bool{}
 	var out []connectorTarget
@@ -43,6 +101,9 @@ func parseConnectorTargets(args []string) ([]connectorTarget, error) {
 		name, hostport, ok := strings.Cut(a, "=")
 		if !ok || !connectorName.MatchString(name) || seen[name] {
 			return nil, fmt.Errorf("%q: want NAME=HOST:PORT with a lowercase, unique NAME", a)
+		}
+		if hostport == "HOST:PORT" {
+			return nil, fmt.Errorf("%q: replace HOST:PORT with the target's address, like %s=10.0.0.5:5432", a, name)
 		}
 		host, portS, err := net.SplitHostPort(hostport)
 		port, perr := strconv.Atoi(portS)
@@ -268,31 +329,53 @@ func cmdConnectorKey(c *cmdCtx, cl *Client, args []string) int {
 }
 
 func cmdConnectorRun(c *cmdCtx, args []string) int {
-	if len(args) == 0 {
+	key := os.Getenv("PILLDROPS_CONNECTOR_KEY")
+	// Flags may sit anywhere: the dashboard's run hint puts them after a target.
+	var positional, subnetArgs, dnsArgs []string
+	for i := 0; i < len(args); i++ {
+		opt, val, inline := args[i], "", false
+		if f, v, ok := strings.Cut(opt, "="); ok && (f == "--key" || f == "--subnet" || f == "--dns") {
+			opt, val, inline = f, v, true
+		}
+		switch opt {
+		case "--key", "--subnet", "--dns":
+			if !inline {
+				if i+1 == len(args) {
+					fmt.Fprintln(c.stderr, connectorUsage)
+					return ExitUsage
+				}
+				i++
+				val = args[i]
+			}
+			switch opt {
+			case "--key":
+				key = val
+			case "--subnet":
+				subnetArgs = append(subnetArgs, val)
+			default:
+				dnsArgs = append(dnsArgs, val)
+			}
+		default:
+			positional = append(positional, args[i])
+		}
+	}
+	if len(positional) == 0 {
 		fmt.Fprintln(c.stderr, connectorUsage)
 		return ExitUsage
 	}
-	name, rest := args[0], args[1:]
-	key := os.Getenv("PILLDROPS_CONNECTOR_KEY")
-	var targetArgs []string
-	for i := 0; i < len(rest); i++ {
-		if rest[i] == "--key" {
-			if i+1 == len(rest) {
-				fmt.Fprintln(c.stderr, connectorUsage)
-				return ExitUsage
-			}
-			key = rest[i+1]
-			i++
-			continue
-		}
-		targetArgs = append(targetArgs, rest[i])
-	}
+	name, targetArgs := positional[0], positional[1:]
 	if !connectorName.MatchString(name) {
 		fmt.Fprintln(c.stderr, "connector name must be a lowercase DNS label")
 		return ExitUsage
 	}
-	targets, err := parseConnectorTargets(targetArgs)
-	if err != nil {
+	var targets []connectorTarget
+	var err error
+	if len(targetArgs) > 0 || (len(subnetArgs) == 0 && len(dnsArgs) == 0) {
+		targets, err = parseConnectorTargets(targetArgs)
+	}
+	subnets, serr := parseConnectorSubnets(subnetArgs)
+	suffixes, derr := parseConnectorSuffixes(dnsArgs)
+	if err = errors.Join(err, serr, derr); err != nil {
 		fmt.Fprintln(c.stderr, err)
 		fmt.Fprintln(c.stderr, connectorUsage)
 		return ExitUsage
@@ -317,7 +400,8 @@ func cmdConnectorRun(c *cmdCtx, args []string) int {
 	_, _ = rand.Read(b)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	cs := &connectorSession{cl: cl, name: name, instance: "inst-" + hex.EncodeToString(b), targets: targets, stderr: c.stderr}
+	cs := &connectorSession{cl: cl, name: name, instance: "inst-" + hex.EncodeToString(b),
+		targets: targets, subnets: subnets, suffixes: suffixes, stderr: c.stderr}
 	if reason := cs.run(ctx); reason != "" {
 		cs.logf("the connector has stopped: %s\n", reason)
 		if cs.teamRefused && key == "" {
@@ -334,6 +418,8 @@ type connectorSession struct {
 	cl             *Client
 	name, instance string
 	targets        []connectorTarget
+	subnets        []netip.Prefix
+	suffixes       []string
 	stderr         io.Writer
 	connected      bool
 	maxConns       int           // 0 means connectorMaxConns
@@ -344,6 +430,16 @@ type connectorSession struct {
 
 	connMu   sync.Mutex
 	inFlight map[string]bool
+
+	// dnsServer is where lookups go; "" reads /etc/resolv.conf. Tests set it.
+	dnsServer string
+	dnsBusy   atomic.Int32
+	// dialLocalAnswers keeps loopback and link-local A records; tests only, their listeners are on loopback.
+	dialLocalAnswers bool
+
+	answerMu    sync.Mutex
+	answered    map[netip.Addr]time.Time // addresses this process answered, until their TTL
+	answerOrder []netip.Addr             // answered's keys, oldest first
 }
 
 // connectorMaxConns bounds what one process dials at once, whatever the hub asks for.
@@ -430,14 +526,31 @@ func (s *connectorSession) connect(ctx context.Context, info connectorSessionInf
 		defer writeMu.Unlock()
 		return ctrl.WriteJSON(v)
 	}
-	if err := send(map[string]any{"type": "hello", "instance_id": s.instance, "version": Version,
-		"capabilities": map[string]any{"targets": s.targets}}); err != nil {
+	targets := s.targets
+	if targets == nil {
+		targets = []connectorTarget{}
+	}
+	caps := map[string]any{"targets": targets}
+	if len(s.subnets) > 0 {
+		nets := make([]string, len(s.subnets))
+		for i, p := range s.subnets {
+			nets[i] = p.String()
+		}
+		caps["subnets"] = nets
+	}
+	if len(s.suffixes) > 0 {
+		caps["dns"] = map[string]any{"suffixes": s.suffixes}
+	}
+	if err := send(map[string]any{"type": "hello", "instance_id": s.instance, "version": Version, "capabilities": caps}); err != nil {
 		return "", err
 	}
 	if s.connected {
 		s.logf("connector reconnected\n")
 	} else {
 		s.logf("connector %s is up; grant a sandbox one of its targets with: pilldrops sandbox grant <sandbox> %s/<target>\n", s.name, s.name)
+		if len(s.subnets)+len(s.suffixes) > 0 {
+			s.logf("  and a subnet or names under a suffix with %s/subnet:<cidr> or %s/dns:<suffix>\n", s.name, s.name)
+		}
 	}
 	s.connected = true
 	readWait := s.readWait
@@ -459,6 +572,9 @@ func (s *connectorSession) connect(ctx context.Context, info connectorSessionInf
 			Target string `json:"target"`
 			Port   int    `json:"port"`
 			Reason string `json:"reason"`
+			Dest   string `json:"dest"`
+			Name   string `json:"name"`
+			QType  string `json:"qtype"`
 		}
 		if err := ctrl.ReadJSON(&msg); err != nil {
 			return "", err
@@ -474,8 +590,18 @@ func (s *connectorSession) connect(ctx context.Context, info connectorSessionInf
 			if !shareOpenID.MatchString(msg.ID) {
 				continue
 			}
-			t, ok := s.target(msg.Target, msg.Port)
-			if !ok || (msg.Proto != "" && msg.Proto != "tcp") {
+			var label, addr, resolveName string
+			var dest netip.AddrPort
+			ok := msg.Proto == "" || msg.Proto == "tcp"
+			if ok && msg.Dest != "" {
+				dest, ok, resolveName = s.destAllowed(msg.Dest, msg.Name)
+				label, addr = dest.String(), dest.String()
+			} else if ok {
+				var t connectorTarget
+				t, ok = s.target(msg.Target, msg.Port)
+				label, addr = t.Name, t.addr
+			}
+			if !ok {
 				_ = send(map[string]any{"type": "fail", "id": msg.ID, "reason": "not announced"})
 				continue
 			}
@@ -488,8 +614,27 @@ func (s *connectorSession) connect(ctx context.Context, info connectorSessionInf
 			}
 			go func(id string) {
 				defer s.release(id)
-				s.serveConn(ctx, info.ConnURL, id, t, send)
+				// Resolving here, not in the read loop, keeps a slow resolver from stalling every other message.
+				if resolveName != "" && !s.resolvesTo(ctx, resolveName, dest.Addr()) {
+					_ = send(map[string]any{"type": "fail", "id": id, "reason": "not announced"})
+					return
+				}
+				s.serveConn(ctx, info.ConnURL, id, label, addr, send)
 			}(msg.ID)
+		case "dns":
+			if !shareOpenID.MatchString(msg.ID) {
+				continue
+			}
+			if s.dnsBusy.Add(1) > connectorMaxDNS {
+				s.dnsBusy.Add(-1)
+				_ = send(map[string]any{"type": "dns_answer", "id": msg.ID, "rcode": int(dnsmessage.RCodeServerFailure), "answers": []dnsAnswer{}})
+				continue
+			}
+			go func(id, name, qtype string) {
+				defer s.dnsBusy.Add(-1)
+				rcode, answers := s.answerDNS(ctx, name, qtype)
+				_ = send(map[string]any{"type": "dns_answer", "id": id, "rcode": rcode, "answers": answers})
+			}(msg.ID, msg.Name, msg.QType)
 		}
 	}
 }
@@ -537,18 +682,18 @@ func (s *connectorSession) release(id string) {
 	delete(s.inFlight, id)
 }
 
-func (s *connectorSession) serveConn(ctx context.Context, connURL, id string, t connectorTarget, send func(any) error) {
-	local, err := (&net.Dialer{Timeout: shareDialLocal}).DialContext(ctx, "tcp", t.addr)
+func (s *connectorSession) serveConn(ctx context.Context, connURL, id, label, addr string, send func(any) error) {
+	local, err := (&net.Dialer{Timeout: shareDialLocal}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		_ = send(map[string]any{"type": "fail", "id": id, "reason": "dial"})
-		s.logf("%s: cannot reach %s: %v\n", t.Name, t.addr, err)
+		s.logf("%s: cannot reach %s: %v\n", label, addr, err)
 		return
 	}
 	defer func() { _ = local.Close() }()
 	ws, _, err := websocket.DefaultDialer.DialContext(ctx, connURL+id, nil)
 	if err != nil {
 		_ = send(map[string]any{"type": "fail", "id": id, "reason": "conn"})
-		s.logf("%s: cannot open the data connection: %v\n", t.Name, err)
+		s.logf("%s: cannot open the data connection: %v\n", label, err)
 		return
 	}
 	remote := &wsConn{ws: ws}
@@ -562,7 +707,199 @@ func (s *connectorSession) serveConn(ctx context.Context, connURL, id string, t 
 	_ = local.Close()
 	_ = remote.Close()
 	<-done
-	s.logf("%s  %d B in, %d B out, %s\n", t.Name, toTarget, fromTarget, time.Since(start).Round(time.Millisecond))
+	s.logf("%s  %d B in, %d B out, %s\n", label, toTarget, fromTarget, time.Since(start).Round(time.Millisecond))
+}
+
+type dnsAnswer struct {
+	Type  string `json:"type"`
+	Value string `json:"value"`
+	TTL   uint32 `json:"ttl"`
+}
+
+func (s *connectorSession) underSuffix(name string) bool {
+	for _, d := range s.suffixes {
+		if name == d || strings.HasSuffix(name, "."+d) {
+			return true
+		}
+	}
+	return false
+}
+
+// destAllowed reports whether an open naming dest may be dialled: inside one of
+// this process's own --subnet ranges, or an address it answered for its own
+// --dns suffixes within the TTL. When neither holds but name is under its
+// suffixes, it returns name for the caller to resolve off the read loop, for an
+// instance that did not answer the lookup. Whatever the server sends, nothing
+// else is dialled.
+func (s *connectorSession) destAllowed(raw, name string) (dest netip.AddrPort, ok bool, resolve string) {
+	dest, err := netip.ParseAddrPort(raw)
+	if err != nil || !dest.Addr().Is4() || dest.Port() == 0 {
+		return netip.AddrPort{}, false, ""
+	}
+	for _, p := range s.subnets {
+		if p.Contains(dest.Addr()) {
+			return dest, true, ""
+		}
+	}
+	if s.answeredRecently(dest.Addr()) {
+		return dest, true, ""
+	}
+	name = strings.TrimSuffix(strings.ToLower(name), ".")
+	if name == "" || !s.underSuffix(name) {
+		return netip.AddrPort{}, false, ""
+	}
+	return dest, true, name
+}
+
+// resolvesTo reports whether name, resolved by this process, answers addr.
+func (s *connectorSession) resolvesTo(ctx context.Context, name string, addr netip.Addr) bool {
+	answers, rcode := s.resolve(ctx, name, "A")
+	if rcode != dnsmessage.RCodeSuccess {
+		return false
+	}
+	for _, a := range answers {
+		if a.Type == "A" && a.Value == addr.String() {
+			return true
+		}
+	}
+	return false
+}
+
+// answerDNS resolves a relayed lookup with this machine's resolver: A and
+// CNAME chains with their TTLs, AAAA empty, other types NOTIMP, names outside
+// this connector's --dns suffixes REFUSED.
+func (s *connectorSession) answerDNS(ctx context.Context, name, qtype string) (int, []dnsAnswer) {
+	name = strings.TrimSuffix(strings.ToLower(name), ".")
+	if !s.underSuffix(name) {
+		return int(dnsmessage.RCodeRefused), []dnsAnswer{}
+	}
+	switch qtype {
+	case "AAAA":
+		return int(dnsmessage.RCodeSuccess), []dnsAnswer{}
+	case "A", "CNAME":
+	default:
+		return int(dnsmessage.RCodeNotImplemented), []dnsAnswer{}
+	}
+	answers, rcode := s.resolve(ctx, name, qtype)
+	if answers == nil {
+		answers = []dnsAnswer{}
+	}
+	return int(rcode), answers
+}
+
+// resolve asks the machine's resolver (dnsServer in tests) for name and
+// returns the answer chain in order, at most 32 records, remembering each A
+// address for its TTL clamped to 30-300 s, as the hub does.
+func (s *connectorSession) resolve(ctx context.Context, name, qtype string) ([]dnsAnswer, dnsmessage.RCode) {
+	server := s.dnsServer
+	if server == "" {
+		server = systemNameserver()
+	}
+	qname, err := dnsmessage.NewName(name + ".")
+	if server == "" || err != nil {
+		return nil, dnsmessage.RCodeServerFailure
+	}
+	typ := dnsmessage.TypeA
+	if qtype == "CNAME" {
+		typ = dnsmessage.TypeCNAME
+	}
+	var idb [2]byte
+	_, _ = rand.Read(idb[:])
+	id := uint16(idb[0])<<8 | uint16(idb[1])
+	req, err := (&dnsmessage.Message{Header: dnsmessage.Header{ID: id, RecursionDesired: true},
+		Questions: []dnsmessage.Question{{Name: qname, Type: typ, Class: dnsmessage.ClassINET}}}).Pack()
+	if err != nil {
+		return nil, dnsmessage.RCodeServerFailure
+	}
+	conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "udp", server)
+	if err != nil {
+		return nil, dnsmessage.RCodeServerFailure
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(2500 * time.Millisecond))
+	if _, err := conn.Write(req); err != nil {
+		return nil, dnsmessage.RCodeServerFailure
+	}
+	buf := make([]byte, 1500)
+	var resp dnsmessage.Message
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			return nil, dnsmessage.RCodeServerFailure
+		}
+		// A stray or spoofed datagram is skipped; the real reply may still come before the deadline.
+		if resp.Unpack(buf[:n]) == nil && resp.ID == id && resp.Response && len(resp.Questions) == 1 &&
+			strings.EqualFold(resp.Questions[0].Name.String(), qname.String()) &&
+			resp.Questions[0].Type == typ && resp.Questions[0].Class == dnsmessage.ClassINET {
+			break
+		}
+	}
+	if resp.RCode != dnsmessage.RCodeSuccess {
+		return nil, resp.RCode
+	}
+	var out []dnsAnswer
+	for _, a := range resp.Answers {
+		switch b := a.Body.(type) {
+		case *dnsmessage.CNAMEResource:
+			out = append(out, dnsAnswer{"CNAME", strings.TrimSuffix(b.CNAME.String(), "."), a.Header.TTL})
+		case *dnsmessage.AResource:
+			ip := netip.AddrFrom4(b.A)
+			// A record under a suffix must not open this host's own or metadata addresses.
+			if !s.dialLocalAnswers && (ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast()) {
+				continue
+			}
+			out = append(out, dnsAnswer{"A", ip.String(), a.Header.TTL})
+			s.remember(ip, a.Header.TTL)
+		}
+		if len(out) == 32 {
+			break
+		}
+	}
+	return out, dnsmessage.RCodeSuccess
+}
+
+func (s *connectorSession) remember(a netip.Addr, ttl uint32) {
+	ttl = max(dnsMinTTL, min(ttl, dnsMaxTTL))
+	s.answerMu.Lock()
+	defer s.answerMu.Unlock()
+	if s.answered == nil {
+		s.answered = map[netip.Addr]time.Time{}
+	}
+	if _, ok := s.answered[a]; !ok {
+		// ponytail: oldest by first answer, not by expiry; a refreshed address keeps its place.
+		if len(s.answerOrder) >= connectorMaxAnswered {
+			delete(s.answered, s.answerOrder[0])
+			s.answerOrder = s.answerOrder[1:]
+		}
+		s.answerOrder = append(s.answerOrder, a)
+	}
+	s.answered[a] = time.Now().Add(time.Duration(ttl) * time.Second)
+}
+
+func (s *connectorSession) answeredRecently(a netip.Addr) bool {
+	s.answerMu.Lock()
+	defer s.answerMu.Unlock()
+	exp, ok := s.answered[a]
+	return ok && exp.After(time.Now())
+}
+
+// systemNameserver is the first nameserver in /etc/resolv.conf as host:53.
+// ponytail: a machine with no resolv.conf (Windows) answers no split DNS;
+// its subnets still work.
+func systemNameserver() string {
+	b, err := os.ReadFile("/etc/resolv.conf")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[0] == "nameserver" {
+			if ip, err := netip.ParseAddr(f[1]); err == nil {
+				return netip.AddrPortFrom(ip.WithZone(""), 53).String()
+			}
+		}
+	}
+	return ""
 }
 
 // sandboxPrivateGrant is sandbox grant|revoke <id> <connector>/<target>.
