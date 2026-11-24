@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/netip"
@@ -163,6 +164,8 @@ func cmdConnector(c *cmdCtx, args []string) int {
 				Online    bool
 				Instances int
 				Targets   []connectorTarget
+				Subnets   []string
+				DNS       struct{ Suffixes []string }
 			} `json:"connectors"`
 		}
 		if c.jsonOut {
@@ -176,13 +179,14 @@ func cmdConnector(c *cmdCtx, args []string) int {
 		if err := cl.JSON("GET", "/v1/connectors", nil, &out); err != nil {
 			return c.fail(err)
 		}
-		rows := [][]string{{"NAME", "ONLINE", "INSTANCES", "TARGETS"}}
+		rows := [][]string{{"NAME", "ONLINE", "INSTANCES", "TARGETS", "ROUTES"}}
 		for _, cn := range out.Connectors {
 			var ts []string
 			for _, t := range cn.Targets {
 				ts = append(ts, fmt.Sprintf("%s:%d", t.Name, t.Port))
 			}
-			rows = append(rows, []string{cn.Name, strconv.FormatBool(cn.Online), strconv.Itoa(cn.Instances), strings.Join(ts, ",")})
+			rows = append(rows, []string{cn.Name, strconv.FormatBool(cn.Online), strconv.Itoa(cn.Instances), strings.Join(ts, ","),
+				strings.Join(append(append([]string{}, cn.Subnets...), cn.DNS.Suffixes...), ",")})
 		}
 		table(c.stdout, rows)
 		return ExitOK
@@ -902,65 +906,162 @@ func systemNameserver() string {
 	return ""
 }
 
-// sandboxPrivateGrant is sandbox grant|revoke <id> <connector>/<target>.
-func sandboxPrivateGrant(c *cmdCtx, cl *Client, sub string, args []string) int {
-	var conn, target string
-	if len(args) == 2 {
-		conn, target, _ = strings.Cut(args[1], "/")
+const grantArgUsage = "<connector>/<target>|<connector>/subnet:<cidr>|<connector>/dns:<suffix>"
+
+// privateGrantArg parses <connector>/<target>, <connector>/subnet:<cidr> or
+// <connector>/dns:<suffix> into a grant request body.
+func privateGrantArg(arg string) (map[string]any, bool) {
+	conn, rest, _ := strings.Cut(arg, "/")
+	if conn == "" || rest == "" {
+		return nil, false
 	}
-	if conn == "" || target == "" {
-		fmt.Fprintf(c.stderr, "usage: pilldrops sandbox %s <id> <connector>/<target>\n", sub)
+	body := map[string]any{"connector": conn}
+	switch {
+	case strings.HasPrefix(rest, "subnet:"):
+		body["subnet"] = strings.TrimPrefix(rest, "subnet:")
+	case strings.HasPrefix(rest, "dns:"):
+		body["dns"] = strings.TrimPrefix(rest, "dns:")
+	default:
+		body["target"] = rest
+	}
+	for _, k := range []string{"subnet", "dns", "target"} {
+		if v, ok := body[k]; ok && v == "" {
+			return nil, false
+		}
+	}
+	return body, true
+}
+
+// sandboxPrivateGrant is sandbox grant|revoke <id> <connector>/<what>.
+func sandboxPrivateGrant(c *cmdCtx, cl *Client, sub string, args []string) int {
+	var body map[string]any
+	ok := len(args) == 2
+	if ok {
+		body, ok = privateGrantArg(args[1])
+	}
+	if !ok {
+		fmt.Fprintf(c.stderr, "usage: pilldrops sandbox %s <id> %s\n", sub, grantArgUsage)
 		return ExitUsage
 	}
 	path := "/v1/sandboxes/" + url.PathEscape(args[0]) + "/private"
 	if sub == "revoke" {
-		if err := cl.JSON("DELETE", path+"/"+url.PathEscape(conn)+"/"+url.PathEscape(target), nil, nil); err != nil {
+		del := path + "/" + url.PathEscape(str(body["connector"])) + "/" + url.PathEscape(str(body["target"]))
+		if _, isTarget := body["target"]; !isTarget {
+			id, err := ownGrantID(cl, path, body)
+			if err != nil {
+				return c.fail(err)
+			}
+			del = path + "/" + url.PathEscape(id)
+		}
+		if err := cl.JSON("DELETE", del, nil, nil); err != nil {
 			return c.fail(adminOnly(err))
 		}
 		if c.jsonOut {
-			printJSON(c.stdout, map[string]any{"status": "revoked", "connector": conn, "target": target})
+			out := map[string]any{"status": "revoked"}
+			maps.Copy(out, body)
+			printJSON(c.stdout, out)
 		} else if !c.quiet {
-			fmt.Fprintf(c.stdout, "revoked %s/%s\n", conn, target)
+			fmt.Fprintf(c.stdout, "revoked %s\n", args[1])
 		}
 		return ExitOK
 	}
 	var out map[string]any
-	if err := cl.JSON("POST", path, map[string]any{"connector": conn, "target": target}, &out); err != nil {
+	if err := cl.JSON("POST", path, body, &out); err != nil {
 		return c.fail(adminOnly(err))
 	}
 	if c.jsonOut {
 		printJSON(c.stdout, out)
-	} else if names, ok := out["names"].([]any); ok {
-		for _, n := range names {
-			fmt.Fprintln(c.stdout, str(n))
-		}
+		return ExitOK
 	}
+	printGrant(c, out)
 	return ExitOK
 }
 
-// copyPrivateGrants re-grants the parent's targets to a fork through the grant
-// API, so the caller's own permission decides each one.
+// printGrant prints the names a target answers to, or a subnet or suffix
+// grant's id and value, and on stderr any part the platform keeps for itself.
+func printGrant(c *cmdCtx, out map[string]any) {
+	if names, ok := out["names"].([]any); ok {
+		for _, n := range names {
+			fmt.Fprintln(c.stdout, str(n))
+		}
+		return
+	}
+	fmt.Fprintf(c.stdout, "%s\t%s\n", str(out["id"]), str(out["value"]))
+	printShadowed(c, out)
+}
+
+// printShadowed warns, on stderr, of the ranges of a grant the platform keeps for itself.
+func printShadowed(c *cmdCtx, out map[string]any) {
+	if sh, ok := out["shadowed"].([]any); ok && len(sh) > 0 {
+		parts := make([]string, len(sh))
+		for i, s := range sh {
+			parts[i] = str(s)
+		}
+		fmt.Fprintf(c.stderr, "not routed, reserved by the platform: %s\n", strings.Join(parts, ", "))
+	}
+}
+
+// ownGrantID finds the id of the sandbox's own subnet or DNS grant that body names.
+func ownGrantID(cl *Client, path string, body map[string]any) (string, error) {
+	var out struct {
+		Grants []struct{ ID, Connector, Kind, Value, Source string } `json:"grants"`
+	}
+	if err := cl.JSON("GET", path, nil, &out); err != nil {
+		return "", err
+	}
+	kind, value := "subnet", str(body["subnet"])
+	if p, err := netip.ParsePrefix(value); err == nil {
+		value = p.Masked().String()
+	}
+	if v, ok := body["dns"]; ok {
+		kind, value = "dns", strings.TrimSuffix(strings.ToLower(str(v)), ".")
+	}
+	for _, g := range out.Grants {
+		if g.Connector != str(body["connector"]) || g.Kind != kind || g.Value != value {
+			continue
+		}
+		if g.Source == "sandbox" {
+			return g.ID, nil
+		}
+		return "", hintedError{"that grant comes from " + g.Source + ", not from the sandbox itself",
+			"revoke it on the tag with `pilldrops private revoke " + g.ID + "`"}
+	}
+	return "", hintedError{"this sandbox has no such grant", "the sandbox's Private access panel in the dashboard lists its grants"}
+}
+
+// copyPrivateGrants re-grants the parent's own grants to a fork through the
+// grant API, so the caller's own permission decides each one. Grants the
+// parent has through a tag follow the tag, not the fork.
 func copyPrivateGrants(c *cmdCtx, cl *Client, parent, child string) int {
 	var out struct {
-		Grants []struct {
-			Connector string `json:"connector"`
-			Target    string `json:"target"`
-		} `json:"grants"`
+		Grants []struct{ Connector, Target, Kind, Value, Source string } `json:"grants"`
 	}
 	if err := cl.JSON("GET", "/v1/sandboxes/"+url.PathEscape(parent)+"/private", nil, &out); err != nil {
 		fmt.Fprintf(c.stderr, "%s was forked, but its private-network grants were not copied\n", child)
 		return c.fail(err)
 	}
-	failed := 0
+	tried, failed := 0, 0
 	for _, g := range out.Grants {
-		err := cl.JSON("POST", "/v1/sandboxes/"+url.PathEscape(child)+"/private", map[string]any{"connector": g.Connector, "target": g.Target}, nil)
-		if err != nil {
+		if g.Source != "" && g.Source != "sandbox" {
+			continue
+		}
+		body := map[string]any{"connector": g.Connector}
+		label := g.Connector + "/" + g.Target
+		switch g.Kind {
+		case "subnet", "dns":
+			body[g.Kind] = g.Value
+			label = g.Connector + "/" + g.Kind + ":" + g.Value
+		default:
+			body["target"] = g.Target
+		}
+		tried++
+		if err := cl.JSON("POST", "/v1/sandboxes/"+url.PathEscape(child)+"/private", body, nil); err != nil {
 			failed++
-			fmt.Fprintf(c.stderr, "not copied: %s/%s: %v\n", g.Connector, g.Target, err)
+			fmt.Fprintf(c.stderr, "not copied: %s: %v\n", label, err)
 		}
 	}
 	if failed > 0 {
-		fmt.Fprintf(c.stderr, "%s was forked; %d of %d grants were not copied\n", child, failed, len(out.Grants))
+		fmt.Fprintf(c.stderr, "%s was forked; %d of %d grants were not copied\n", child, failed, tried)
 		return ExitAPI
 	}
 	return ExitOK

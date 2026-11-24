@@ -174,18 +174,18 @@ func cmdSandbox(c *cmdCtx, args []string) int {
 		var volumes stringList
 		fs.Var(&volumes, "volume", "attach a volume as <id>:<path>, repeatable (`pilldrops volume create`)")
 		var grants stringList
-		fs.Var(&grants, "grant", "let it reach a target behind a connector, as <connector>/<target>, repeatable")
+		fs.Var(&grants, "grant", "let it reach something behind a connector, as "+grantArgUsage+", repeatable")
 		if err := fs.Parse(subArgs); err != nil {
 			return ExitUsage
 		}
-		privateTargets := make([]map[string]string, 0, len(grants))
+		privateTargets := make([]map[string]any, 0, len(grants))
 		for _, g := range grants {
-			conn, target, ok := strings.Cut(g, "/")
-			if !ok || conn == "" || target == "" {
-				fmt.Fprintf(c.stderr, "pilldrops sandbox create: --grant %q is not <connector>/<target>\n", g)
+			body, ok := privateGrantArg(g)
+			if !ok {
+				fmt.Fprintf(c.stderr, "pilldrops sandbox create: --grant %q is not %s\n", g, grantArgUsage)
 				return ExitUsage
 			}
-			privateTargets = append(privateTargets, map[string]string{"connector": conn, "target": target})
+			privateTargets = append(privateTargets, body)
 		}
 		if *snapshot != "" {
 			if err := c.requireFeature(controlPlaneFeature); err != nil {

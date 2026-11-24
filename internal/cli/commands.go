@@ -113,7 +113,7 @@ func commandTable() []command {
 			help: `sandbox create|ls|get|rm|pause|resume|fork
     create flags: --template --from-snapshot --image --start --port (xN) --env (xN)
                   --vcpu --mem --storage --timeout --idle --slug --networks
-                  --grant <connector>/<target> (xN)
+                  --grant <connector>/<target>|subnet:<cidr>|dns:<suffix> (xN)
     fork flags: --name --timeout --shared --keep-private (copy its private-network grants)
 sandbox open <id> [--print] [--port <n>]   open the sandbox's app in a browser; --port opens any port you started a server on (flags in either order)
 sandbox ports <id>     every port the platform probes, which are listening, and an HTTPS link for each
@@ -139,8 +139,9 @@ sandbox set-timeout <id> <secs>   hard lifetime from now (-1 = persistent, plan
                        permitting); set-idle <id> <secs> is the standby timer
                        and set-hibernate <id> <secs> the pause-to-disk one
                        (-1 = never, 0 = platform default)
-sandbox grant|revoke <id> <connector>/<target>   let it reach, or stop it reaching,
-                       a target behind a connector as <target>.private
+sandbox grant|revoke <id> <connector>/<target>|subnet:<cidr>|dns:<suffix>
+                       let it reach, or stop it reaching, a target (<target>.private),
+                       a subnet or names under a suffix behind a connector
 sandbox share|unshare <id>    org-visible or private; share wipes the agent
                        logins inside first, and unshare does not restore them
                        (a public link to an app on this machine: pilldrops share <port>)
@@ -188,6 +189,15 @@ sandbox rm <id> --confirm     destroy it and its disk; --confirm is required
                        PILLDROPS_CONNECTOR_KEY to a connector key (--key also works,
                        but shows in ps and shell history)`,
 			example: `pilldrops --json version`, // run holds the terminal, so the sweep cannot use it
+		},
+		{
+			name: "private", run: cmdPrivate, humanOnly: true,
+			subs: []string{"grant", "grants", "revoke"},
+			help: `private grant --tag <tag> <connector>/<target>|subnet:<cidr>|dns:<suffix>
+                       | grants [--tag <tag>] | revoke <grant-id>   let every sandbox in a
+                       network tag reach something behind a connector, including
+                       sandboxes that join the tag later`,
+			example: `pilldrops --json version`, // grant and revoke change org state; grants needs private access
 		},
 		{
 			name: "shell", run: cmdShell, humanOnly: true,

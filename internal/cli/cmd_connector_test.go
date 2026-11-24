@@ -24,24 +24,25 @@ const teamAdminMsg = "only an owner or admin of this team can change connectors 
 
 // fakeConnectorServer is the API and the connector hub in one, driven by the test.
 type fakeConnectorServer struct {
-	srv          *httptest.Server
-	mu           sync.Mutex
-	ctrl         *websocket.Conn
-	hello        string
-	fails        chan string
-	dnsAnswers   chan map[string]any
-	dataConns    chan *websocket.Conn
-	sessionAuth  atomic.Value
-	parentGrants string
-	grantCalls   atomic.Int32
-	grantBody    atomic.Value
-	createBody   atomic.Value
-	sessionCode  atomic.Int32 // answered once in place of a session
-	sessionHang  chan struct{}
-	tunnelCode   atomic.Int32 // answered once in place of the control socket
-	sessionMsg   string       // the error of a refused session; set before the run starts
-	connRefused  atomic.Bool  // refuse the data sockets
-	createDenied string       // when set, POST /v1/sandboxes answers 403 with this error
+	srv                                 *httptest.Server
+	mu                                  sync.Mutex
+	ctrl                                *websocket.Conn
+	hello                               string
+	fails                               chan string
+	dnsAnswers                          chan map[string]any
+	dataConns                           chan *websocket.Conn
+	sessionAuth                         atomic.Value
+	parentGrants                        string
+	grantCalls                          atomic.Int32
+	grantBody                           atomic.Value
+	createBody                          atomic.Value
+	sessionCode                         atomic.Int32 // answered once in place of a session
+	sessionHang                         chan struct{}
+	tunnelCode                          atomic.Int32 // answered once in place of the control socket
+	sessionMsg                          string       // the error of a refused session; set before the run starts
+	connRefused                         atomic.Bool  // refuse the data sockets
+	createDenied                        string       // when set, POST /v1/sandboxes answers 403 with this error
+	tagBody, tagQuery, revoked, deleted atomic.Value
 }
 
 func newFakeConnectorServer(t *testing.T, private bool) *fakeConnectorServer {
@@ -150,6 +151,24 @@ func newFakeConnectorServer(t *testing.T, private bool) *fakeConnectorServer {
 		}
 		w.WriteHeader(http.StatusCreated)
 		_, _ = io.WriteString(w, `{"connector":"prod","target":"db","names":["db.private"]}`)
+	})
+	mux.HandleFunc("DELETE /v1/sandboxes/{id}/private/{rest...}", func(w http.ResponseWriter, r *http.Request) {
+		f.deleted.Store(r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /v1/private/grants", func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		f.tagBody.Store(string(raw))
+		w.WriteHeader(http.StatusCreated)
+		_, _ = io.WriteString(w, `{"id":"pg_9","tag":"backend","connector":"prod","kind":"subnet","value":"10.0.5.0/24","sandboxes":2,"unsupported":["sb7"],"shadowed":["10.128.0.0/16"]}`)
+	})
+	mux.HandleFunc("GET /v1/private/grants", func(w http.ResponseWriter, r *http.Request) {
+		f.tagQuery.Store(r.URL.RawQuery)
+		_, _ = io.WriteString(w, `{"grants":[{"id":"pg_9","tag":"backend","connector":"prod","kind":"subnet","value":"10.0.5.0/24"}]}`)
+	})
+	mux.HandleFunc("DELETE /v1/private/grants/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.revoked.Store(r.PathValue("id"))
+		w.WriteHeader(http.StatusNoContent)
 	})
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
@@ -884,6 +903,59 @@ func TestConnectorKeepsAtMostTheAnsweredLimit(t *testing.T) {
 	}
 	if len(cs.answered) != connectorMaxAnswered || len(cs.answerOrder) != connectorMaxAnswered || cs.answeredRecently(first) {
 		t.Fatalf("kept %d (%d ordered), oldest kept %v", len(cs.answered), len(cs.answerOrder), cs.answeredRecently(first))
+	}
+}
+
+func TestSandboxGrantSubnetAndDNS(t *testing.T) {
+	f := newFakeConnectorServer(t, true)
+	for arg, want := range map[string]string{
+		"prod/subnet:10.0.5.0/24": `sb1 {"connector":"prod","subnet":"10.0.5.0/24"}`,
+		"prod/dns:corp.internal":  `sb1 {"connector":"prod","dns":"corp.internal"}`,
+		"prod/db":                 `sb1 {"connector":"prod","target":"db"}`,
+	} {
+		if code, _, errS := authedCLI(t, f.srv, "sandbox", "grant", "sb1", arg); code != ExitOK {
+			t.Fatalf("%s: %d %s", arg, code, errS)
+		}
+		if got := f.grantBody.Load(); got != want {
+			t.Errorf("%s: body %q", arg, got)
+		}
+	}
+	for _, bad := range []string{"prod/subnet:", "prod/dns:", "/db", "prod"} {
+		if code, _, _ := authedCLI(t, f.srv, "sandbox", "grant", "sb1", bad); code != ExitUsage {
+			t.Errorf("%s: %d", bad, code)
+		}
+	}
+}
+
+func TestSandboxRevokeFindsItsOwnGrant(t *testing.T) {
+	f := newFakeConnectorServer(t, true)
+	f.parentGrants = `[{"id":"pg_1","connector":"prod","kind":"subnet","value":"10.0.5.0/24","source":"sandbox"},` +
+		`{"id":"pg_2","connector":"prod","kind":"dns","value":"corp.internal","source":"tag:backend"}]`
+	if code, _, errS := authedCLI(t, f.srv, "sandbox", "revoke", "sb1", "prod/subnet:10.0.5.0/24"); code != ExitOK || f.deleted.Load() != "/v1/sandboxes/sb1/private/pg_1" {
+		t.Fatalf("subnet: %d %s %v", code, errS, f.deleted.Load())
+	}
+	if code, _, errS := authedCLI(t, f.srv, "sandbox", "revoke", "sb1", "prod/subnet:10.0.5.9/24"); code != ExitOK || f.deleted.Load() != "/v1/sandboxes/sb1/private/pg_1" {
+		t.Fatalf("non-canonical subnet: %d %s %v", code, errS, f.deleted.Load())
+	}
+	if code, _, errS := authedCLI(t, f.srv, "sandbox", "revoke", "sb1", "prod/dns:corp.internal"); code == ExitOK || !strings.Contains(errS, "private revoke") {
+		t.Fatalf("a tag's grant: %d %s", code, errS)
+	}
+	if code, _, _ := authedCLI(t, f.srv, "sandbox", "revoke", "sb1", "prod/db"); code != ExitOK || f.deleted.Load() != "/v1/sandboxes/sb1/private/prod/db" {
+		t.Fatalf("target: %d %v", code, f.deleted.Load())
+	}
+}
+
+func TestForkKeepPrivateCopiesOwnGrantsOnly(t *testing.T) {
+	f := newFakeConnectorServer(t, true)
+	f.parentGrants = `[{"connector":"prod","target":"db","kind":"target","value":"db","source":"sandbox"},` +
+		`{"connector":"prod","kind":"subnet","value":"10.0.5.0/24","source":"sandbox"},` +
+		`{"connector":"prod","kind":"dns","value":"corp.internal","source":"tag:backend"}]`
+	code, _, errS := authedCLI(t, f.srv, "sandbox", "fork", "--keep-private", "sb1")
+	if code != ExitOK || f.grantCalls.Load() != 2 {
+		t.Fatalf("%d %s grants=%d", code, errS, f.grantCalls.Load())
+	}
+	if got := f.grantBody.Load(); got != `sb2 {"connector":"prod","subnet":"10.0.5.0/24"}` {
+		t.Fatalf("last grant body %q", got)
 	}
 }
 
