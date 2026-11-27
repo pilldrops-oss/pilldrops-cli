@@ -181,9 +181,25 @@ func TestSharePipesBytesAndSaysHello(t *testing.T) {
 	}
 }
 
+// listenV6Only listens on [::1] at a port nothing holds on 127.0.0.1, since the CLI dials 127.0.0.1 first.
+func listenV6Only(t *testing.T) net.Listener {
+	t.Helper()
+	for range 20 {
+		l := listen(t, "tcp6", "[::1]:0")
+		v4, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(portOf(l))))
+		if err == nil {
+			_ = v4.Close()
+			return l
+		}
+		_ = l.Close()
+	}
+	t.Fatal("no [::1] port was free on 127.0.0.1")
+	return nil
+}
+
 func TestShareReachesAnAppBoundOnlyToIPv6Loopback(t *testing.T) {
 	f := newFakeShareServer(t, true)
-	l := listen(t, "tcp6", "[::1]:0")
+	l := listenV6Only(t)
 	echoOnce(l)
 	runSession(t, f, portOf(l))
 	conn := f.open(t, strings.Repeat("b", 32))
