@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -791,7 +793,7 @@ func TestConnectorAnswersDNSAndDialsWhatItAnswered(t *testing.T) {
 	echoOnce(good.l)
 	f := newFakeConnectorServer(t, true)
 	runConnectorWith(t, f, func(cs *connectorSession) {
-		cs.suffixes, cs.dnsServer = []string{"corp.internal"}, fakeDNS(t, "127.0.0.1")
+		cs.suffixes, cs.dnsServers = []string{"corp.internal"}, []string{fakeDNS(t, "127.0.0.1")}
 	})
 	m := f.askDNS(t, "wiki.corp.internal", "A")
 	answers, _ := m["answers"].([]any)
@@ -822,7 +824,7 @@ func TestConnectorResolvesANameItDidNotAnswer(t *testing.T) {
 	echoOnce(good.l)
 	f := newFakeConnectorServer(t, true)
 	runConnectorWith(t, f, func(cs *connectorSession) {
-		cs.suffixes, cs.dnsServer = []string{"corp.internal"}, fakeDNS(t, "127.0.0.1")
+		cs.suffixes, cs.dnsServers = []string{"corp.internal"}, []string{fakeDNS(t, "127.0.0.1")}
 	})
 	if got := f.openDest(t, "127.0.0.1:"+good.port, "evil.example"); got != "fail" {
 		t.Fatalf("a name outside its suffixes: %s", got)
@@ -837,7 +839,7 @@ func TestConnectorRefusesAnExpiredAnswerUnlessItResolvesAgain(t *testing.T) {
 	echoOnce(good.l)
 	f := newFakeConnectorServer(t, true)
 	runConnectorWith(t, f, func(cs *connectorSession) {
-		cs.suffixes, cs.dnsServer = []string{"corp.internal"}, fakeDNS(t, "127.0.0.1")
+		cs.suffixes, cs.dnsServers = []string{"corp.internal"}, []string{fakeDNS(t, "127.0.0.1")}
 		cs.answered = map[netip.Addr]time.Time{netip.MustParseAddr("127.0.0.1"): time.Now().Add(-time.Second)}
 	})
 	if got := f.openDest(t, "127.0.0.1:"+good.port, ""); got != "fail" {
@@ -852,7 +854,7 @@ func TestConnectorRefusesADestItsNameDoesNotResolveTo(t *testing.T) {
 	good := listenOnce(t)
 	f := newFakeConnectorServer(t, true)
 	runConnectorWith(t, f, func(cs *connectorSession) {
-		cs.suffixes, cs.dnsServer = []string{"corp.internal"}, fakeDNS(t, "127.0.0.2")
+		cs.suffixes, cs.dnsServers = []string{"corp.internal"}, []string{fakeDNS(t, "127.0.0.2")}
 	})
 	if got := f.openDest(t, "127.0.0.1:"+good.port, "wiki.corp.internal"); got != "fail" {
 		t.Fatalf("a name that resolves elsewhere: %s", got)
@@ -871,7 +873,7 @@ func TestConnectorSlowResolverDoesNotStallTheControlChannel(t *testing.T) {
 	f := newFakeConnectorServer(t, true)
 	runConnectorWith(t, f, func(cs *connectorSession) {
 		cs.subnets = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
-		cs.suffixes, cs.dnsServer = []string{"corp.internal"}, silent.LocalAddr().String()
+		cs.suffixes, cs.dnsServers = []string{"corp.internal"}, []string{silent.LocalAddr().String()}
 	})
 	stuck := strings.Repeat("c", 32)
 	f.send(t, map[string]any{"type": "open", "id": stuck, "proto": "tcp", "dest": "10.1.1.1:80", "name": "wiki.corp.internal"})
@@ -974,7 +976,7 @@ func TestConnectorNeverDialsLoopbackOrLinkLocalAnswers(t *testing.T) {
 		good := listenOnce(t)
 		f := newFakeConnectorServer(t, true)
 		runConnectorWith(t, f, func(cs *connectorSession) {
-			cs.suffixes, cs.dnsServer, cs.dialLocalAnswers = []string{"corp.internal"}, fakeDNS(t, addr), false
+			cs.suffixes, cs.dnsServers, cs.dialLocalAnswers = []string{"corp.internal"}, []string{fakeDNS(t, addr)}, false
 		})
 		m := f.askDNS(t, "wiki.corp.internal", "A")
 		answers, _ := m["answers"].([]any)
@@ -985,6 +987,227 @@ func TestConnectorNeverDialsLoopbackOrLinkLocalAnswers(t *testing.T) {
 			if got := f.openDest(t, addr+":"+good.port, name); got != "fail" {
 				t.Errorf("%s with name %q: %s", addr, name, got)
 			}
+		}
+	}
+}
+
+// dnsServerFunc answers every query on one UDP and TCP port with reply(query, overTCP).
+func dnsServerFunc(t *testing.T, reply func(q dnsmessage.Message, tcp bool) dnsmessage.Message) string {
+	t.Helper()
+	var pc net.PacketConn
+	var ln net.Listener
+	for i := 0; ln == nil; i++ {
+		var err error
+		if pc, err = net.ListenPacket("udp", "127.0.0.1:0"); err != nil {
+			t.Fatal(err)
+		}
+		if ln, err = net.Listen("tcp", pc.LocalAddr().String()); err != nil {
+			_ = pc.Close()
+			if i == 20 {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Cleanup(func() { _ = pc.Close(); _ = ln.Close() })
+	respond := func(raw []byte, tcp bool) []byte {
+		var m dnsmessage.Message
+		if m.Unpack(raw) != nil {
+			return nil
+		}
+		r := reply(m, tcp)
+		r.ID, r.Response, r.Questions = m.ID, true, m.Questions
+		out, _ := r.Pack()
+		return out
+	}
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			n, from, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			if out := respond(buf[:n], false); out != nil {
+				_, _ = pc.WriteTo(out, from)
+			}
+		}
+	}()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				var n [2]byte
+				if _, err := io.ReadFull(conn, n[:]); err != nil {
+					return
+				}
+				raw := make([]byte, int(n[0])<<8|int(n[1]))
+				if _, err := io.ReadFull(conn, raw); err != nil {
+					return
+				}
+				if out := respond(raw, true); out != nil {
+					_, _ = conn.Write(append([]byte{byte(len(out) >> 8), byte(len(out))}, out...))
+				}
+			}()
+		}
+	}()
+	return pc.LocalAddr().String()
+}
+
+func aRecord(name, ip string) dnsmessage.Resource {
+	return dnsmessage.Resource{Header: dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName(name), Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET, TTL: 60},
+		Body: &dnsmessage.AResource{A: netip.MustParseAddr(ip).As4()}}
+}
+
+func TestConnectorResolveRetriesATruncatedAnswerOverTCP(t *testing.T) {
+	var tcpQueries atomic.Int32
+	server := dnsServerFunc(t, func(q dnsmessage.Message, tcp bool) dnsmessage.Message {
+		if !tcp {
+			return dnsmessage.Message{Header: dnsmessage.Header{Truncated: true}}
+		}
+		tcpQueries.Add(1)
+		return dnsmessage.Message{Answers: []dnsmessage.Resource{aRecord("wiki.corp.internal.", "10.0.0.7")}}
+	})
+	cs := &connectorSession{dnsServers: []string{server}}
+	answers, rcode := cs.resolve(context.Background(), "wiki.corp.internal", "A")
+	if rcode != dnsmessage.RCodeSuccess || len(answers) != 1 || answers[0].Value != "10.0.0.7" || tcpQueries.Load() != 1 {
+		t.Fatalf("%v %v tcp=%d", answers, rcode, tcpQueries.Load())
+	}
+}
+
+func TestConnectorResolveTriesNameserversInOrder(t *testing.T) {
+	silent, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = silent.Close() })
+	fixed := func(rcode dnsmessage.RCode, rrs ...dnsmessage.Resource) string {
+		return dnsServerFunc(t, func(dnsmessage.Message, bool) dnsmessage.Message {
+			return dnsmessage.Message{Header: dnsmessage.Header{RCode: rcode}, Answers: rrs}
+		})
+	}
+	good := fixed(dnsmessage.RCodeSuccess, aRecord("wiki.corp.internal.", "10.0.0.7"))
+	nxdomain := fixed(dnsmessage.RCodeNameError)
+	for _, tc := range []struct {
+		name    string
+		servers []string
+		rcode   dnsmessage.RCode
+		answers int
+	}{
+		{"timeout then good", []string{silent.LocalAddr().String(), good}, dnsmessage.RCodeSuccess, 1},
+		{"servfail then good", []string{fixed(dnsmessage.RCodeServerFailure), good}, dnsmessage.RCodeSuccess, 1},
+		{"refused then good", []string{fixed(dnsmessage.RCodeRefused), good}, dnsmessage.RCodeSuccess, 1},
+		{"nxdomain ends it", []string{nxdomain, good}, dnsmessage.RCodeNameError, 0},
+		{"all refuse", []string{fixed(dnsmessage.RCodeRefused), fixed(dnsmessage.RCodeRefused)}, dnsmessage.RCodeRefused, 0},
+	} {
+		cs := &connectorSession{dnsServers: tc.servers}
+		answers, rcode := cs.resolve(context.Background(), "wiki.corp.internal", "A")
+		if rcode != tc.rcode || len(answers) != tc.answers {
+			t.Errorf("%s: %v %v", tc.name, answers, rcode)
+		}
+	}
+}
+
+func TestSystemNameserversListsThreeInOrder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "resolv.conf")
+	if err := os.WriteFile(path, []byte("search x\nnameserver 10.0.0.1\nnameserver fe80::1%eth0\nnameserver 10.0.0.3\nnameserver 10.0.0.4\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := resolvConfPath
+	resolvConfPath = path
+	t.Cleanup(func() { resolvConfPath = old })
+	got := strings.Join(systemNameservers(), " ")
+	if got != "10.0.0.1:53 [fe80::1]:53 10.0.0.3:53" {
+		t.Fatalf("%q", got)
+	}
+}
+
+func TestConnectorResolveTrimsAnswersToTheHubsReplyLimit(t *testing.T) {
+	server := dnsServerFunc(t, func(dnsmessage.Message, bool) dnsmessage.Message {
+		var rrs []dnsmessage.Resource
+		for i := 0; i < 4; i++ {
+			target := dnsmessage.MustNewName(strings.Repeat("a", 60) + strconv.Itoa(i) + ".corp.internal.")
+			rrs = append(rrs, dnsmessage.Resource{Header: dnsmessage.ResourceHeader{Name: dnsmessage.MustNewName("wiki.corp.internal."), Type: dnsmessage.TypeCNAME, Class: dnsmessage.ClassINET, TTL: 60},
+				Body: &dnsmessage.CNAMEResource{CNAME: target}})
+		}
+		for i := 0; i < 30; i++ {
+			rrs = append(rrs, aRecord("wiki.corp.internal.", "10.0.1."+strconv.Itoa(i+1)))
+		}
+		return dnsmessage.Message{Answers: rrs}
+	})
+	cs := &connectorSession{dnsServers: []string{server}}
+	answers, rcode := cs.resolve(context.Background(), "wiki.corp.internal", "A")
+	reply, _ := json.Marshal(map[string]any{"type": "dns_answer", "id": "dns-1", "rcode": int(rcode), "answers": answers})
+	if len(answers) == 0 || len(answers) >= 34 || len(reply) > connectorMaxReplyBytes {
+		t.Fatalf("%d answers, reply %d bytes", len(answers), len(reply))
+	}
+}
+
+func TestConnectorRunWarnsWhenDNSHasNoNameserver(t *testing.T) {
+	old := resolvConfPath
+	resolvConfPath = filepath.Join(t.TempDir(), "missing")
+	t.Cleanup(func() { resolvConfPath = old })
+	f := newFakeConnectorServer(t, false)
+	_, _, errS := authedCLI(t, f.srv, "connector", "run", "prod", "--dns", "corp.internal")
+	if !strings.Contains(errS, "no nameserver found") {
+		t.Fatalf("stderr %q", errS)
+	}
+	_, _, errS = authedCLI(t, f.srv, "connector", "run", "prod", "--subnet", "10.0.0.0/16")
+	if strings.Contains(errS, "no nameserver found") {
+		t.Fatalf("stderr %q", errS)
+	}
+}
+
+func TestConnectorRunRefusesDuplicateAndReservedRoutes(t *testing.T) {
+	f := newFakeConnectorServer(t, true)
+	longSuffix := strings.Repeat(strings.Repeat("a", 50)+".", 5) + "com"
+	for _, args := range [][]string{
+		{"--subnet", "10.0.0.0/16", "--subnet", "10.0.0.0/16"}, {"--dns", "corp.internal", "--dns", "Corp.Internal."},
+		{"--dns", longSuffix}, {"--dns", strings.Repeat("a", 64) + ".com"},
+		{"--subnet", "10.128.0.0/16"}, {"--subnet", "10.128.4.0/24"}, {"--subnet", "127.0.0.0/8"}, {"--subnet", "100.64.0.0/10"},
+		{"--subnet", "192.168.30.0/24"}, {"--subnet", "169.254.169.254/32"},
+	} {
+		if code, _, errS := authedCLI(t, f.srv, append([]string{"connector", "run", "prod"}, args...)...); code != ExitUsage || errS == "" {
+			t.Errorf("%v: code %d %s", args, code, errS)
+		}
+	}
+	for _, ok := range []string{"10.0.0.0/8", "192.168.0.0/16", "100.0.0.0/8"} {
+		if _, err := parseConnectorSubnets([]string{ok}); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+}
+
+func TestPrivateGrantTakesFlagsAnywhere(t *testing.T) {
+	f := newFakeConnectorServer(t, true)
+	for _, args := range [][]string{
+		{"private", "grant", "prod/subnet:10.0.5.0/24", "--tag", "backend"},
+		{"private", "grant", "prod/subnet:10.0.5.0/24", "--tag=backend"},
+	} {
+		if code, _, errS := authedCLI(t, f.srv, args...); code != ExitOK {
+			t.Fatalf("%v: %d %s", args, code, errS)
+		}
+		if got := f.tagBody.Load(); got != `{"connector":"prod","subnet":"10.0.5.0/24","tag":"backend"}` {
+			t.Fatalf("%v: body %q", args, got)
+		}
+	}
+	if code, _, _ := authedCLI(t, f.srv, "private", "grants", "--tag", "backend", "extra"); code != ExitUsage {
+		t.Errorf("grants with a positional: %d", code)
+	}
+}
+
+func TestPrivateGrantsOnAServerWithoutThemSaysSo(t *testing.T) {
+	f := newFakeConnectorServer(t, true)
+	old := http.NewServeMux()
+	old.Handle("/v1/capabilities", f.srv.Config.Handler)
+	old.HandleFunc("/v1/private/grants", http.NotFound)
+	srv := httptest.NewServer(old)
+	t.Cleanup(srv.Close)
+	for _, args := range [][]string{{"private", "grant", "--tag", "b", "prod/db"}, {"private", "grants"}, {"--json", "private", "grants"}} {
+		if code, _, errS := authedCLI(t, srv, args...); code == ExitOK || !strings.Contains(errS, "predates tag grants") {
+			t.Errorf("%v: %d %q", args, code, errS)
 		}
 	}
 }
