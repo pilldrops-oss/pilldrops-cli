@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"net/url"
 )
 
@@ -27,17 +29,18 @@ func cmdPrivate(c *cmdCtx, args []string) int {
 	tag := fs.String("tag", "", "network tag")
 	switch args[0] {
 	case "grant":
-		if fs.Parse(args[1:]) != nil || *tag == "" || fs.NArg() != 1 {
+		positional, err := parseMixed(fs, args[1:])
+		if err != nil || *tag == "" || len(positional) != 1 {
 			break
 		}
-		body, ok := privateGrantArg(fs.Arg(0))
+		body, ok := privateGrantArg(positional[0])
 		if !ok {
 			break
 		}
 		body["tag"] = *tag
 		var out map[string]any
 		if err := cl.JSON("POST", "/v1/private/grants", body, &out); err != nil {
-			return c.fail(adminOnly(err))
+			return c.fail(oldServerGrants(adminOnly(err)))
 		}
 		if c.jsonOut {
 			printJSON(c.stdout, out)
@@ -54,7 +57,7 @@ func cmdPrivate(c *cmdCtx, args []string) int {
 		}
 		return ExitOK
 	case "grants", "list", "ls":
-		if fs.Parse(args[1:]) != nil || fs.NArg() != 0 {
+		if positional, err := parseMixed(fs, args[1:]); err != nil || len(positional) != 0 {
 			break
 		}
 		path := "/v1/private/grants"
@@ -64,7 +67,7 @@ func cmdPrivate(c *cmdCtx, args []string) int {
 		if c.jsonOut {
 			var raw map[string]any
 			if err := cl.JSON("GET", path, nil, &raw); err != nil {
-				return c.fail(err)
+				return c.fail(oldServerGrants(err))
 			}
 			printJSON(c.stdout, raw)
 			return ExitOK
@@ -73,7 +76,7 @@ func cmdPrivate(c *cmdCtx, args []string) int {
 			Grants []struct{ ID, Tag, Connector, Kind, Value string } `json:"grants"`
 		}
 		if err := cl.JSON("GET", path, nil, &out); err != nil {
-			return c.fail(err)
+			return c.fail(oldServerGrants(err))
 		}
 		rows := [][]string{{"ID", "TAG", "CONNECTOR", "KIND", "VALUE"}}
 		for _, g := range out.Grants {
@@ -97,4 +100,14 @@ func cmdPrivate(c *cmdCtx, args []string) int {
 	}
 	fmt.Fprintln(c.stderr, privateUsage)
 	return ExitUsage
+}
+
+// oldServerGrants explains the 404 a server without tag grants gives.
+func oldServerGrants(err error) error {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+		return hintedError{"this server predates tag grants",
+			"upgrade the server, or grant one sandbox at a time with `pilldrops sandbox grant`"}
+	}
+	return err
 }

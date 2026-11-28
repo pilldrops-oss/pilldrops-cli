@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,7 +41,19 @@ const (
 	connectorMaxAnswered = 1024
 	dnsMinTTL            = 30
 	dnsMaxTTL            = 300
+	dnsQueryBudget       = 2500 * time.Millisecond
+	// connectorMaxReplyBytes is the reply size the hub accepts; dnsReplyOverhead
+	// leaves room for the message around the answers.
+	connectorMaxReplyBytes = 4 << 10
+	dnsReplyOverhead       = 256
 )
+
+// platformRanges are the ranges the server carves out of a sandbox's routes.
+var platformRanges = []netip.Prefix{
+	netip.MustParsePrefix("10.128.0.0/16"), netip.MustParsePrefix("192.168.30.0/23"),
+	netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("127.0.0.0/8"),
+}
 
 // parseConnectorSubnets checks --subnet values as the server does: IPv4, /8 to
 // /32, no host bits.
@@ -52,6 +66,14 @@ func parseConnectorSubnets(args []string) ([]netip.Prefix, error) {
 		p, err := netip.ParsePrefix(a)
 		if err != nil || !p.Addr().Is4() || p.Bits() < 8 || p.Masked() != p {
 			return nil, fmt.Errorf("--subnet %q: want an IPv4 CIDR from /8 to /32 with no host bits, like 10.0.0.0/16", a)
+		}
+		if slices.Contains(out, p) {
+			return nil, fmt.Errorf("--subnet %q is given twice", a)
+		}
+		for _, r := range platformRanges {
+			if r.Bits() <= p.Bits() && r.Contains(p.Addr()) {
+				return nil, fmt.Errorf("--subnet %q: every address in it is reserved by the platform (%s)", a, r)
+			}
 		}
 		out = append(out, p)
 	}
@@ -69,7 +91,7 @@ func parseConnectorSuffixes(args []string) ([]string, error) {
 		d := strings.TrimSuffix(strings.ToLower(a), ".")
 		labels := strings.Split(d, ".")
 		_, ipErr := netip.ParseAddr(d)
-		ok := len(labels) >= 2 && ipErr != nil
+		ok := len(labels) >= 2 && len(d) <= 253 && ipErr != nil
 		for _, l := range labels {
 			ok = ok && connectorName.MatchString(l)
 		}
@@ -79,6 +101,9 @@ func parseConnectorSuffixes(args []string) ([]string, error) {
 		}
 		if !ok {
 			return nil, fmt.Errorf("--dns %q: want a DNS suffix like corp.internal", a)
+		}
+		if slices.Contains(out, d) {
+			return nil, fmt.Errorf("--dns %q is given twice", a)
 		}
 		out = append(out, d)
 	}
@@ -384,6 +409,9 @@ func cmdConnectorRun(c *cmdCtx, args []string) int {
 		fmt.Fprintln(c.stderr, connectorUsage)
 		return ExitUsage
 	}
+	if len(suffixes) > 0 && len(systemNameservers()) == 0 {
+		fmt.Fprintln(c.stderr, "warning: no nameserver found in "+resolvConfPath+", so --dns lookups will fail; --subnet routes still work")
+	}
 	var cl *Client
 	if key != "" {
 		// A connector key is the whole credential on a headless host: no login needed.
@@ -435,9 +463,9 @@ type connectorSession struct {
 	connMu   sync.Mutex
 	inFlight map[string]bool
 
-	// dnsServer is where lookups go; "" reads /etc/resolv.conf. Tests set it.
-	dnsServer string
-	dnsBusy   atomic.Int32
+	// dnsServers is where lookups go; empty reads resolv.conf. Tests set it.
+	dnsServers []string
+	dnsBusy    atomic.Int32
 	// dialLocalAnswers keeps loopback and link-local A records; tests only, their listeners are on loopback.
 	dialLocalAnswers bool
 
@@ -791,16 +819,18 @@ func (s *connectorSession) answerDNS(ctx context.Context, name, qtype string) (i
 	return int(rcode), answers
 }
 
-// resolve asks the machine's resolver (dnsServer in tests) for name and
-// returns the answer chain in order, at most 32 records, remembering each A
-// address for its TTL clamped to 30-300 s, as the hub does.
+// resolve asks the machine's resolvers (dnsServers in tests) in order for name
+// and returns the answer chain in order, at most 32 records and a reply the hub
+// accepts, remembering each A address for its TTL clamped to 30-300 s, as the
+// hub does. A resolver that times out, errors or answers SERVFAIL or REFUSED
+// passes the lookup to the next; NXDOMAIN and good answers end it.
 func (s *connectorSession) resolve(ctx context.Context, name, qtype string) ([]dnsAnswer, dnsmessage.RCode) {
-	server := s.dnsServer
-	if server == "" {
-		server = systemNameserver()
+	servers := s.dnsServers
+	if len(servers) == 0 {
+		servers = systemNameservers()
 	}
 	qname, err := dnsmessage.NewName(name + ".")
-	if server == "" || err != nil {
+	if len(servers) == 0 || err != nil {
 		return nil, dnsmessage.RCodeServerFailure
 	}
 	typ := dnsmessage.TypeA
@@ -815,51 +845,112 @@ func (s *connectorSession) resolve(ctx context.Context, name, qtype string) ([]d
 	if err != nil {
 		return nil, dnsmessage.RCodeServerFailure
 	}
-	conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "udp", server)
-	if err != nil {
-		return nil, dnsmessage.RCodeServerFailure
-	}
-	defer func() { _ = conn.Close() }()
-	_ = conn.SetDeadline(time.Now().Add(2500 * time.Millisecond))
-	if _, err := conn.Write(req); err != nil {
-		return nil, dnsmessage.RCodeServerFailure
-	}
-	buf := make([]byte, 1500)
+	// The hub waits 3 s for a reply, so the servers share one budget.
+	budget := dnsQueryBudget / time.Duration(len(servers))
+	failure := dnsmessage.RCodeServerFailure
 	var resp dnsmessage.Message
-	for {
-		n, err := conn.Read(buf)
+	answered := false
+	for _, server := range servers {
+		deadline := time.Now().Add(budget)
+		resp, err = dnsExchange(ctx, "udp", server, req, deadline, id, qname, typ)
+		if err == nil && resp.Truncated {
+			resp, err = dnsExchange(ctx, "tcp", server, req, deadline, id, qname, typ)
+		}
 		if err != nil {
-			return nil, dnsmessage.RCodeServerFailure
+			continue
 		}
-		// A stray or spoofed datagram is skipped; the real reply may still come before the deadline.
-		if resp.Unpack(buf[:n]) == nil && resp.ID == id && resp.Response && len(resp.Questions) == 1 &&
-			strings.EqualFold(resp.Questions[0].Name.String(), qname.String()) &&
-			resp.Questions[0].Type == typ && resp.Questions[0].Class == dnsmessage.ClassINET {
-			break
+		if resp.RCode == dnsmessage.RCodeServerFailure || resp.RCode == dnsmessage.RCodeRefused {
+			failure = resp.RCode
+			continue
 		}
+		answered = true
+		break
+	}
+	if !answered {
+		return nil, failure
 	}
 	if resp.RCode != dnsmessage.RCodeSuccess {
 		return nil, resp.RCode
 	}
 	var out []dnsAnswer
+	size := dnsReplyOverhead
 	for _, a := range resp.Answers {
+		var ans dnsAnswer
 		switch b := a.Body.(type) {
 		case *dnsmessage.CNAMEResource:
-			out = append(out, dnsAnswer{"CNAME", strings.TrimSuffix(b.CNAME.String(), "."), a.Header.TTL})
+			ans = dnsAnswer{"CNAME", strings.TrimSuffix(b.CNAME.String(), "."), a.Header.TTL}
 		case *dnsmessage.AResource:
 			ip := netip.AddrFrom4(b.A)
 			// A record under a suffix must not open this host's own or metadata addresses.
 			if !s.dialLocalAnswers && (ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast()) {
 				continue
 			}
-			out = append(out, dnsAnswer{"A", ip.String(), a.Header.TTL})
-			s.remember(ip, a.Header.TTL)
+			ans = dnsAnswer{"A", ip.String(), a.Header.TTL}
+		default:
+			continue
+		}
+		enc, _ := json.Marshal(ans)
+		if size += len(enc) + 1; size > connectorMaxReplyBytes {
+			break
+		}
+		out = append(out, ans)
+		if ans.Type == "A" {
+			s.remember(netip.MustParseAddr(ans.Value), ans.TTL)
 		}
 		if len(out) == 32 {
 			break
 		}
 	}
 	return out, dnsmessage.RCodeSuccess
+}
+
+// dnsExchange sends req to server over network and returns the matching reply,
+// before deadline.
+func dnsExchange(ctx context.Context, network, server string, req []byte, deadline time.Time, id uint16, qname dnsmessage.Name, typ dnsmessage.Type) (dnsmessage.Message, error) {
+	var resp dnsmessage.Message
+	conn, err := (&net.Dialer{Deadline: deadline}).DialContext(ctx, network, server)
+	if err != nil {
+		return resp, err
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(deadline)
+	if network == "tcp" {
+		if _, err := conn.Write(append([]byte{byte(len(req) >> 8), byte(len(req))}, req...)); err != nil {
+			return resp, err
+		}
+		var n [2]byte
+		if _, err := io.ReadFull(conn, n[:]); err != nil {
+			return resp, err
+		}
+		buf := make([]byte, int(n[0])<<8|int(n[1]))
+		if _, err := io.ReadFull(conn, buf); err != nil {
+			return resp, err
+		}
+		if err := resp.Unpack(buf); err != nil || !dnsReplyMatches(&resp, id, qname, typ) {
+			return resp, errors.New("bad DNS reply")
+		}
+		return resp, nil
+	}
+	if _, err := conn.Write(req); err != nil {
+		return resp, err
+	}
+	buf := make([]byte, 1500)
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			return resp, err
+		}
+		// A stray or spoofed datagram is skipped; the real reply may still come before the deadline.
+		if resp.Unpack(buf[:n]) == nil && dnsReplyMatches(&resp, id, qname, typ) {
+			return resp, nil
+		}
+	}
+}
+
+func dnsReplyMatches(resp *dnsmessage.Message, id uint16, qname dnsmessage.Name, typ dnsmessage.Type) bool {
+	return resp.ID == id && resp.Response && len(resp.Questions) == 1 &&
+		strings.EqualFold(resp.Questions[0].Name.String(), qname.String()) &&
+		resp.Questions[0].Type == typ && resp.Questions[0].Class == dnsmessage.ClassINET
 }
 
 func (s *connectorSession) remember(a netip.Addr, ttl uint32) {
@@ -887,23 +978,28 @@ func (s *connectorSession) answeredRecently(a netip.Addr) bool {
 	return ok && exp.After(time.Now())
 }
 
-// systemNameserver is the first nameserver in /etc/resolv.conf as host:53.
+// resolvConfPath is where systemNameservers reads; tests point it elsewhere.
+var resolvConfPath = "/etc/resolv.conf"
+
+// systemNameservers lists the first three nameservers in resolv.conf as
+// host:53, in order, as glibc does.
 // ponytail: a machine with no resolv.conf (Windows) answers no split DNS;
 // its subnets still work.
-func systemNameserver() string {
-	b, err := os.ReadFile("/etc/resolv.conf")
+func systemNameservers() []string {
+	b, err := os.ReadFile(resolvConfPath)
 	if err != nil {
-		return ""
+		return nil
 	}
+	var out []string
 	for _, line := range strings.Split(string(b), "\n") {
 		f := strings.Fields(line)
 		if len(f) >= 2 && f[0] == "nameserver" {
 			if ip, err := netip.ParseAddr(f[1]); err == nil {
-				return netip.AddrPortFrom(ip.WithZone(""), 53).String()
+				out = append(out, netip.AddrPortFrom(ip.WithZone(""), 53).String())
 			}
 		}
 	}
-	return ""
+	return out[:min(len(out), 3)]
 }
 
 const grantArgUsage = "<connector>/<target>|<connector>/subnet:<cidr>|<connector>/dns:<suffix>"
